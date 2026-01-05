@@ -286,44 +286,31 @@ def start_stream(key: str):
             
             cmd.extend([
             "-loglevel", "error", "-user_agent", "VLC/3.0.20",
-            # Aggressive reconnection (like VLC)
+            # Network reconnection
             "-reconnect", "1", "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "10", "-reconnect_on_network_error", "1",
-            # Very aggressive stream analysis (VLC-style)
-            "-analyzeduration", "20000000",  # 20M - analyze more data
-            "-probesize", "30000000",        # 30M - probe more data
-            # Input flags - be very forgiving like VLC
+            "-reconnect_delay_max", "10",
+            # Balanced stream analysis - enough for audio detection, not too slow
+            "-analyzeduration", "7000000",   # 7M - sweet spot
+            "-probesize", "15000000",        # 15M - reasonable
+            # Input flags - forgiving but not excessive
             "-fflags", "+genpts+igndts+discardcorrupt",
             "-err_detect", "ignore_err",
-            "-max_error_rate", "1.0",
-            # Use wallclock timestamps for broken streams
-            "-use_wallclock_as_timestamps", "1",
             "-i", url,
-            # Increase thread queue size for stability
-            "-thread_queue_size", "512",
-            # Map all streams explicitly
-            "-map", "0:v:0?",  # First video stream
-            "-map", "0:a?",    # All audio streams
-            "-map", "0:s?",    # All subtitle streams
-            # Copy codecs without re-encoding
-            "-c:v", "copy",
-            "-c:a", "copy",
-            "-c:s", "copy",
-            # Fix timestamp issues (VLC does this automatically)
+            # Map streams
+            "-map", "0:v?",  # All video streams
+            "-map", "0:a?",  # All audio streams
+            "-map", "0:s?",  # All subtitles
+            # Copy codecs
+            "-c", "copy",
+            # Fix timestamp issues
             "-avoid_negative_ts", "make_zero",
             "-start_at_zero",
-            # Audio sync with higher tolerance
+            # Audio/video sync - moderate tolerance
             "-async", "1",
-            "-vsync", "cfr",
-            "-copyts",
-            # Longer max delay for bad streams
-            "-max_delay", "5000000",
-            "-max_interleave_delta", "0",
+            "-vsync", "passthrough",
             # Output format
             "-f", "mpegts",
-            "-mpegts_copyts", "1",
-            "-muxdelay", "0",
-            "-muxpreload", "0",
+            "-flush_packets", "1",
             "pipe:1"
             ])
             

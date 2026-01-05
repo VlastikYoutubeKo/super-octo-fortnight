@@ -286,32 +286,45 @@ def start_stream(key: str):
             
             cmd.extend([
             "-loglevel", "error", "-user_agent", "VLC/3.0.20",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
-            # Stream analysis - increased for better audio detection
-            "-analyzeduration", "10000000",  # Increased from 5M to 10M
-            "-probesize", "20000000",        # Increased from 10M to 20M
-            # Input flags - analyze streams properly and handle errors
-            "-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
+            # Aggressive reconnection (like VLC)
+            "-reconnect", "1", "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "10", "-reconnect_on_network_error", "1",
+            # Very aggressive stream analysis (VLC-style)
+            "-analyzeduration", "20000000",  # 20M - analyze more data
+            "-probesize", "30000000",        # 30M - probe more data
+            # Input flags - be very forgiving like VLC
+            "-fflags", "+genpts+igndts+discardcorrupt",
             "-err_detect", "ignore_err",
             "-max_error_rate", "1.0",
+            # Use wallclock timestamps for broken streams
+            "-use_wallclock_as_timestamps", "1",
             "-i", url,
-            # Map all video, audio, and subtitle streams
-            "-map", "0:v?",  # Map all video streams
-            "-map", "0:a?",  # Map all audio streams
-            "-map", "0:s?",  # Map all subtitle streams
+            # Increase thread queue size for stability
+            "-thread_queue_size", "512",
+            # Map all streams explicitly
+            "-map", "0:v:0?",  # First video stream
+            "-map", "0:a?",    # All audio streams
+            "-map", "0:s?",    # All subtitle streams
             # Copy codecs without re-encoding
-            "-c", "copy",
-            # Fix timestamp issues
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-c:s", "copy",
+            # Fix timestamp issues (VLC does this automatically)
             "-avoid_negative_ts", "make_zero",
             "-start_at_zero",
-            # Audio/video sync - increased correction
+            # Audio sync with higher tolerance
             "-async", "1",
-            "-max_delay", "500000",
-            "-vsync", "passthrough",
-            # Reduce latency and ensure packet flushing
-            "-flags", "low_delay",
+            "-vsync", "cfr",
+            "-copyts",
+            # Longer max delay for bad streams
+            "-max_delay", "5000000",
+            "-max_interleave_delta", "0",
             # Output format
-            "-f", "mpegts", "-flush_packets", "1", "pipe:1"
+            "-f", "mpegts",
+            "-mpegts_copyts", "1",
+            "-muxdelay", "0",
+            "-muxpreload", "0",
+            "pipe:1"
             ])
             
             try:
@@ -350,16 +363,17 @@ def start_stream(key: str):
             
             ret = proc.wait()
             t.join(timeout=2)
-            
+
             with lock:
                 if key in streams:
                     streams[key]['proc'] = None
                     streams[key]['pipe'] = None
-            
-            if ret == 0:
-                log.info(f"Stream {key} ended normally")
+
+            # Exit code 0 = normal end, -9 = SIGKILL (TVH disconnect)
+            if ret == 0 or ret == -9:
+                log.info(f"Stream {key} ended normally (code {ret})")
                 return
-            
+
             log.warning(f"Stream {key} failed (code {ret})")
             time.sleep(0.5)
         

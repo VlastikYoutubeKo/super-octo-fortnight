@@ -287,11 +287,11 @@ def start_stream(key: str):
             cmd.extend([
             "-loglevel", "error", "-user_agent", "VLC/3.0.20",
             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
-            # Stream analysis - help with corrupted inputs
-            "-analyzeduration", "5000000",
-            "-probesize", "10000000",
-            # Error handling flags - ignore corrupted packets and generate missing timestamps
-            "-fflags", "+genpts+igndts+discardcorrupt",
+            # Stream analysis - increased for better audio detection
+            "-analyzeduration", "10000000",  # Increased from 5M to 10M
+            "-probesize", "20000000",        # Increased from 10M to 20M
+            # Input flags - analyze streams properly and handle errors
+            "-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
             "-err_detect", "ignore_err",
             "-max_error_rate", "1.0",
             "-i", url,
@@ -304,9 +304,12 @@ def start_stream(key: str):
             # Fix timestamp issues
             "-avoid_negative_ts", "make_zero",
             "-start_at_zero",
-            # Audio/video sync
+            # Audio/video sync - increased correction
             "-async", "1",
+            "-max_delay", "500000",
             "-vsync", "passthrough",
+            # Reduce latency and ensure packet flushing
+            "-flags", "low_delay",
             # Output format
             "-f", "mpegts", "-flush_packets", "1", "pipe:1"
             ])

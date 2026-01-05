@@ -1,0 +1,19 @@
+{
+  "sources": {
+    "1": [
+      "http://example1.com:80/live/username/password/{channel_id}.ts",
+      "http://example2.com:80/live/username/password/{channel_id}.ts"
+    ],
+    "2": [
+      "http://example3.com:80/live/username/password/{channel_id}.ts"
+    ]
+  },
+  "xtream_providers": {},
+  "fallback_mode": false,
+  "auto_fallback": true,
+  "tvheadend": {
+    "url": "http://your-tvheadend-server:9981",
+    "username": "your-username",
+    "password": "your-password"
+  }
+}

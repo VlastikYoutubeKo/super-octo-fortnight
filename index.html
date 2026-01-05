@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stream Proxy Manager</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;color:#333;line-height:1.6}
+.container{max-width:1400px;margin:0 auto;padding:20px}
+header{background:#fff;padding:20px;margin-bottom:20px;border-bottom:1px solid #e0e0e0}
+h1{font-size:24px;font-weight:600;margin-bottom:5px}
+.subtitle{color:#666;font-size:13px}
+.tabs{display:flex;gap:0;margin-bottom:20px;border-bottom:1px solid #e0e0e0;background:#fff}
+.tab{padding:12px 24px;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;font-size:14px;color:#666;transition:all .2s}
+.tab:hover{color:#333;background:#f9f9f9}
+.tab.active{color:#333;border-bottom-color:#333;font-weight:500}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.card{background:#fff;border:1px solid #e0e0e0;padding:20px;margin-bottom:15px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:20px}
+.stat{background:#fff;border:1px solid #e0e0e0;padding:15px}
+.stat-label{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.stat-value{font-size:28px;font-weight:600}
+.stream{border-left:3px solid #333;padding-left:15px;margin-bottom:15px}
+.stream-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.stream-title{font-weight:600;font-family:monospace}
+.stream-info{font-size:13px;color:#666;margin-bottom:8px}
+.stream-url{font-family:monospace;font-size:12px;background:#f9f9f9;padding:10px;word-break:break-all;border-left:2px solid #ddd}
+button{background:#333;color:#fff;border:none;padding:10px 18px;font-size:13px;cursor:pointer;transition:all .2s;font-weight:500}
+button:hover{background:#000}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.secondary{background:#f5f5f5;color:#333;border:1px solid #ddd}
+button.secondary:hover{background:#e5e5e5}
+button.danger{background:#d32f2f}
+button.danger:hover{background:#b71c1c}
+.controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.empty{text-align:center;padding:60px 20px;color:#999;font-size:14px}
+.provider{border-left:3px solid #666;padding-left:15px;margin-bottom:15px}
+.provider-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.provider-name{font-weight:600;margin-bottom:3px}
+.provider-url{font-size:12px;color:#666;font-family:monospace}
+.cat-list{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+.cat-tag{background:#f5f5f5;border:1px solid #e0e0e0;padding:5px 12px;font-size:12px}
+input[type="text"],input[type="password"],textarea,select{width:100%;padding:10px;border:1px solid #ddd;font-size:14px;font-family:inherit}
+input:focus,textarea:focus,select:focus{outline:none;border-color:#333}
+label{display:block;font-size:13px;color:#666;margin-bottom:5px;font-weight:500}
+.form-group{margin-bottom:15px}
+.error{color:#d32f2f;font-size:12px;background:#ffebee;border:1px solid #ef9a9a;padding:12px;margin-bottom:15px}
+.success{color:#2e7d32;font-size:12px;background:#e8f5e9;border:1px solid #a5d6a7;padding:12px;margin-bottom:15px}
+.loading{text-align:center;padding:40px;color:#999}
+.badge{display:inline-block;background:#333;color:#fff;padding:3px 8px;font-size:11px;font-weight:600;margin-left:8px}
+.badge.warning{background:#ff9800;color:#000}
+.modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center}
+.modal.active{display:flex}
+.modal-content{background:#fff;padding:30px;max-width:700px;width:90%;max-height:85vh;overflow-y:auto}
+.modal-header{font-size:20px;font-weight:600;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid #e0e0e0}
+.modal-body{margin-bottom:25px}
+.modal-footer{display:flex;gap:10px;justify-content:flex-end;padding-top:15px;border-top:1px solid #e0e0e0}
+.url-list{margin:15px 0}
+.url-item{display:flex;gap:10px;margin-bottom:10px;align-items:center}
+.url-item input{flex:1;margin-bottom:0}
+.url-item button{padding:10px 14px}
+.cat-item{padding:12px;background:#f9f9f9;margin-bottom:8px;cursor:pointer;border-left:2px solid #ddd;transition:all .2s;display:flex;justify-content:space-between;align-items:center}
+.cat-item:hover{background:#f0f0f0;border-left-color:#333}
+.stream-item{padding:12px;border-left:3px solid #666;margin-bottom:8px;background:#f9f9f9}
+.stream-name{font-weight:600;margin-bottom:5px}
+.stream-meta{font-size:12px;color:#666;font-family:monospace}
+.back-btn{display:inline-flex;align-items:center;gap:5px}
+@media(max-width:768px){.stats{grid-template-columns:1fr}.stream-header,.provider-header{flex-direction:column;align-items:flex-start;gap:10px}.modal-content{width:95%;padding:20px}.controls{flex-direction:column}button{width:100%}}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<h1>Stream Proxy Manager</h1>
+<div class="subtitle">Production IPTV proxy with Xtream Codes integration</div>
+</header>
+<div id="app"></div>
+</div>
+<div id="modal" class="modal"></div>
+<script>
+const API='http://192.168.1.135:9005/api';
+let S={status:null,config:null,tab:'dashboard',loading:true,error:null,provider:null,categories:null,category:null,streams:null,modal:null,perPage:10,catPage:0,showCats:false,epg:null,epgStream:null};
+
+async function get(u){const r=await fetch(API+u);return await r.json()}
+async function post(u,d){const r=await fetch(API+u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});return await r.json()}
+async function del(u){const r=await fetch(API+u,{method:'DELETE'});return await r.json()}
+
+function fmt(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h '+(m?m+'m':'')}
+function uptime(s){const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60);if(d>0)return d+'d '+h+'h';if(h>0)return h+'h '+m+'m';return m+'m'}
+function dec(b){try{return atob(b)}catch(e){return b}}
+
+function Stats(){return`<div class="stats"><div class="stat"><div class="stat-label">Streams</div><div class="stat-value">${S.status.total_streams}</div></div><div class="stat"><div class="stat-label">Clients</div><div class="stat-value">${S.status.total_clients}</div></div><div class="stat"><div class="stat-label">Uptime</div><div class="stat-value">${uptime(S.status.uptime)}</div></div><div class="stat"><div class="stat-label">Mode</div><div class="stat-value">${S.status.fallback_mode?'Fallback':'Normal'}</div></div></div>`}
+
+function Stream(s){return`<div class="stream"><div class="stream-header"><div class="stream-title">${s.key}</div><button class="danger" onclick="kill('${s.key}')">Kill</button></div><div class="stream-info">Clients: <strong>${s.clients}</strong> • Age: ${fmt(s.age)}${s.error?' <span class="badge warning">Error</span>':''}</div><div class="stream-url">${s.url}</div>${s.error?`<div class="error" style="margin-top:10px">${s.error}</div>`:''}</div>`}
+
+function Dashboard(){const st=S.status;return`<div class="controls"><button onclick="load()">Refresh</button><button onclick="toggleFallback()">${st.fallback_mode?'Disable':'Enable'} Fallback</button></div>${Stats()}${st.cooldowns&&st.cooldowns.length>0?`<div class="card"><strong>Cooldowns</strong>${st.cooldowns.map(c=>`<div style="margin-top:10px"><code>${c.key}</code> - ${c.remaining}s</div>`).join('')}</div>`:''}
+<div class="card"><h3 style="margin-bottom:15px">Active Streams</h3>${st.streams.length===0?'<div class="empty">No active streams</div>':st.streams.map(Stream).join('')}</div>`}
+
+function Sources(){const srcs=Object.entries(S.config.sources);return`<div class="controls"><button onclick="addSource()">Add Source</button></div><div class="card"><h3 style="margin-bottom:15px">Sources</h3>${srcs.length===0?'<div class="empty">No sources</div>':srcs.map(([id,urls])=>`<div class="stream"><div class="stream-header"><div class="stream-title">Source ${id}</div><div><button onclick="editSource('${id}')">Edit</button> <button class="danger" onclick="delSource('${id}')">Delete</button></div></div><div class="stream-info">${urls.length} URL(s)</div>${urls.map((u,i)=>`<div class="stream-url" style="margin-top:5px">${i+1}. ${u}</div>`).join('')}</div>`).join('')}</div>`}
+
+function Xtream(){const pvs=Object.entries(S.config.xtream_providers||{});if(S.provider){const p=S.config.xtream_providers[S.provider];const perPage=S.perPage||10;const page=S.catPage||0;const totalPages=S.categories?Math.ceil(S.categories.length/perPage):0;const paginatedCats=S.categories?S.categories.slice(page*perPage,(page+1)*perPage):[];const showCats=!S.category||S.showCats;return`<div class="controls"><button onclick="S.provider=null;S.categories=null;S.category=null;S.streams=null;S.showCats=false;S.catPage=0;render()" class="back-btn">← Back to Providers</button><button onclick="loadCats()">Refresh</button></div><div class="card"><h3>${p.name}</h3><div class="provider-url">${p.url}</div><div style="margin-top:10px;font-size:13px"><strong>User:</strong> ${p.username} • <strong>Source:</strong> ${p.source_id||'N/A'}</div></div>${showCats?`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px"><h3>Categories</h3><div style="display:flex;gap:10px;align-items:center"><label style="margin:0;font-size:12px">Per page:</label><select onchange="S.perPage=parseInt(this.value);S.catPage=0;render()" style="padding:5px;border:1px solid #ddd;font-size:12px"><option value="10"${perPage===10?' selected':''}>10</option><option value="25"${perPage===25?' selected':''}>25</option><option value="50"${perPage===50?' selected':''}>50</option><option value="100"${perPage===100?' selected':''}>100</option></select></div></div>${!S.categories?'<div class="loading">Loading...</div>':S.categories.length===0?'<div class="empty">No categories</div>':`${paginatedCats.map(c=>`<div class="cat-item" onclick="loadStreams('${c.id}','${c.name}')"><span>${c.name}</span><span>→</span></div>`).join('')}${totalPages>1?`<div style="display:flex;gap:5px;margin-top:15px;justify-content:center;flex-wrap:wrap">${page>0?`<button onclick="S.catPage=${page-1};render()">← Prev</button>`:''}${Array.from({length:totalPages},(v,i)=>`<button class="${i===page?'':'secondary'}" onclick="S.catPage=${i};render()">${i+1}</button>`).join('')}${page<totalPages-1?`<button onclick="S.catPage=${page+1};render()">Next →</button>`:''}</div>`:''}`}</div>`:''}${S.category?`<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px"><h3>${S.category.name}</h3><div style="display:flex; gap:10px;">${!showCats?`<button onclick="S.showCats=true;render()" style="padding:6px 12px;font-size:11px">Show Categories</button>`:''}<a href="${API}/xtream/providers/${S.provider}/category/${S.category.id}/playlist.m3u" target="_blank" download="playlist_${S.category.id}.m3u" style="display: inline-block; background:#f5f5f5; color:#333; border:1px solid #ddd; padding:6px 12px; font-size:11px; text-decoration: none; font-weight: 500; cursor: pointer;" onmouseover="this.style.background='#e5e5e5'" onmouseout="this.style.background='#f5f5f5'">📋 Download M3U</a></div></div>${!S.streams?'<div class="loading">Loading streams...</div>':S.streams.length===0?'<div class="empty">No streams</div>':S.streams.map(s=>{const sid=s.stream_id||s.id;const proxyUrl=`http://192.168.1.135:9000/${p.source_id}/${sid}.ts`;const rawUrl=`${p.url}/live/${p.username}/${p.password}/${sid}.ts`;return`<div class="stream-item"><div class="stream-name">${s.name}</div><div class="stream-meta">ID: ${sid}${s.epg_channel_id?' • EPG: '+s.epg_channel_id:''}</div><div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap"><button onclick="window.open('${proxyUrl}','_blank')" style="padding:6px 12px;font-size:11px">▶ Play Proxy</button><button onclick="window.open('${rawUrl}','_blank')" class="secondary" style="padding:6px 12px;font-size:11px">▶ Play Raw</button><button onclick="copyUrl('${proxyUrl}')" class="secondary" style="padding:6px 12px;font-size:11px">📋 Copy Proxy</button><button onclick="copyUrl('${rawUrl}')" class="secondary" style="padding:6px 12px;font-size:11px">📋 Copy Raw</button>${s.stream_id?`<button onclick="loadEPG('${s.stream_id}')" class="secondary" style="padding:6px 12px;font-size:11px">📺 EPG</button>`:''}</div>${S.epg&&S.epgStream==sid?`<div style="margin-top:10px;padding:10px;background:#f5f5f5;border-left:2px solid #666">${S.epg.epg_listings&&S.epg.epg_listings.length>0?S.epg.epg_listings.slice(0,5).map(e=>`<div style="margin-bottom:8px;font-size:12px"><strong>${e.start}</strong> - ${dec(e.title)}${e.description?'<div style="color:#666;margin-top:2px">'+dec(e.description)+'</div>':''}</div>`).join(''):'<div style="font-size:12px;color:#666">No EPG data</div>'}</div>`:''}</div>`}).join('')}</div>`:''}</div>`}
+return`<div class="card"><h3 style="margin-bottom:15px">Xtream Providers</h3>${pvs.length===0?'<div class="empty">No providers detected</div>':pvs.map(([id,p])=>`<div class="provider"><div class="provider-header"><div><div class="provider-name">${p.name}</div><div class="provider-url">${p.url}</div>**<div class="provider-url" style="color:#999; font-size: 11px; margin-top: 3px;">ID: ${id}</div>**</div><button onclick="viewProvider('${id}')">View</button></div></div>`).join('')}</div>`}
+
+async function load(){S.loading=true;render();try{[S.status,S.config]=await Promise.all([get('/status'),get('/config')]);S.loading=false;S.error=null}catch(e){S.error='Failed to load: '+e.message;S.loading=false}render()}
+
+async function kill(k){if(confirm('Kill '+k+'?')){await del('/streams/'+encodeURIComponent(k));load()}}
+async function toggleFallback(){await post('/fallback');load()}
+
+function addSource(){S.modal={mode:'add',id:'',urls:['']};showModal()}
+function editSource(id){S.modal={mode:'edit',id,urls:[...S.config.sources[id]]};showModal()}
+async function delSource(id){if(confirm('Delete source '+id+'?')){const s={...S.config.sources};delete s[id];await post('/sources',{sources:s});load()}}
+
+function showModal(){const m=document.getElementById('modal');m.innerHTML=`<div class="modal-content"><div class="modal-header">${S.modal.mode==='add'?'Add':'Edit'} Source</div><div class="modal-body"><div class="form-group"><label>Source ID</label><input id="sid" value="${S.modal.id}" ${S.modal.mode==='edit'?'readonly':''} placeholder="e.g. 3"></div><div class="form-group"><label>URLs (use {channel_id} as placeholder)</label><div id="urls">${S.modal.urls.map((u,i)=>`<div class="url-item"><input class="url-input" data-i="${i}" value="${u}" placeholder="http://server:80/live/user/pass/{channel_id}.ts"><button onclick="remUrl(${i})">×</button></div>`).join('')}</div><button onclick="addUrl()" style="margin-top:10px">+ Add URL</button></div></div><div class="modal-footer"><button class="secondary" onclick="closeModal()">Cancel</button><button onclick="saveSource()">Save</button></div></div>`;m.classList.add('active')}
+
+function addUrl(){S.modal.urls.push('');showModal()}
+function remUrl(i){S.modal.urls.splice(i,1);if(S.modal.urls.length===0)S.modal.urls=[''];showModal()}
+function closeModal(){document.getElementById('modal').classList.remove('active')}
+async function saveSource(){const id=document.getElementById('sid').value.trim();if(!id){alert('Enter source ID');return}const urls=Array.from(document.querySelectorAll('.url-input')).map(i=>i.value.trim()).filter(u=>u);if(urls.length===0){alert('Add at least one URL');return}const s={...S.config.sources,[id]:urls};await post('/sources',{sources:s});closeModal();load()}
+
+async function viewProvider(id){S.provider=id;S.categories=null;S.category=null;S.streams=null;S.showCats=false;S.catPage=0;S.epg=null;S.epgStream=null;render();loadCats()}
+async function loadCats(){const r=await get(`/xtream/providers/${S.provider}/categories?type=live`);S.categories=r.categories||[];S.catPage=0;render()}
+async function loadStreams(id,name){S.category={id,name};S.streams=null;S.showCats=false;S.epg=null;S.epgStream=null;render();const r=await get(`/xtream/providers/${S.provider}/streams?type=live&category_id=${id}`);S.streams=r.streams||[];render()}
+async function loadEPG(streamId){if(S.epgStream===streamId){S.epg=null;S.epgStream=null;render();return}S.epgStream=streamId;S.epg=null;render();const r=await get(`/xtream/providers/${S.provider}/epg/${streamId}`);S.epg=r.epg||{};render()}
+
+function copyUrl(url){
+  if (!navigator.clipboard) {
+    prompt('Copy this URL:',url);
+    return;
+  }
+  navigator.clipboard.writeText(url).then(()=>{
+    const btn=event.target;
+    const orig=btn.textContent;
+    btn.textContent='✓ Copied!';
+    setTimeout(()=>btn.textContent=orig,2000)
+  }).catch(()=>prompt('Copy this URL:',url));
+}
+
+function render(){const a=document.getElementById('app');if(S.loading){a.innerHTML='<div class="loading">Loading...</div>';return}if(S.error){a.innerHTML=`<div class="error">${S.error}</div>`;return}const tabs=['dashboard','sources','xtream'];a.innerHTML=`<div class="tabs">${tabs.map(t=>`<button class="tab ${S.tab===t?'active':''}" onclick="S.tab='${t}';render()">${t.charAt(0).toUpperCase()+t.slice(1)}</button>`).join('')}</div><div class="tab-content ${S.tab==='dashboard'?'active':''}">${Dashboard()}</div><div class="tab-content ${S.tab==='sources'?'active':''}">${Sources()}</div><div class="tab-content ${S.tab==='xtream'?'active':''}">${Xtream()}</div>`}
+
+setInterval(()=>{if(S.tab==='dashboard'&&!S.loading)load()},3000);
+load();
+</script>
+</body>
+</html>

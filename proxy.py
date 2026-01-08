@@ -28,9 +28,9 @@ PROXY_PORT = 9000              # Stream proxy port
 API_PORT = 9005                # Web interface port
 
 # Stream Settings
-FFMPEG_BUFFER = 65536          # Buffer size
-CLEANUP_DELAY = 5             # Seconds before cleanup
-COOLDOWN_TIME = 2            # Cooldown after failure
+FFMPEG_BUFFER = 262144         # Buffer size (256KB - larger for multiple streams)
+CLEANUP_DELAY = 5              # Seconds before cleanup
+COOLDOWN_TIME = 2              # Cooldown after failure
 STARTUP_TIMEOUT = 10           # Max wait for stream start
 SOURCE_RETRY_INTERVAL = 60     # Retry failed sources every N seconds
 SOURCE_CHECK_TIMEOUT = 5       # Timeout for source health checks
@@ -88,7 +88,6 @@ streams = {}
 cooldowns = {}
 lock = threading.RLock()
 start_time = time.time()
-last_ffmpeg = 0
 
 # ============================================================================
 # CONFIGURATION MANAGEMENT
@@ -254,15 +253,6 @@ def restart_stream_with_source(key: str, source_idx: int):
 def start_stream(key: str):
     """Start FFMPEG for stream"""
     def run():
-        global last_ffmpeg
-        
-        # Rate limit
-        with lock:
-            elapsed = time.time() - last_ffmpeg
-            if elapsed < 1.0:
-                time.sleep(1.0 - elapsed)
-            last_ffmpeg = time.time()
-        
         with lock:
             if key not in streams:
                 return

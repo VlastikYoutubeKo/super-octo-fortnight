@@ -37,8 +37,8 @@ A production-ready IPTV proxy system with automatic failover, source recovery, a
 
 1. Clone the repository:
    ```bash
-   git clone <your-repo-url>
-   cd tvheadend
+   git clone https://github.com/VlastikYoutubeKo/super-octo-fortnight.git
+   cd super-octo-fortnight
    ```
 
 2. Create your configuration:

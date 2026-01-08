@@ -88,6 +88,7 @@ streams = {}
 cooldowns = {}
 lock = threading.RLock()
 start_time = time.time()
+url_counters = {}  # Track active streams per source URL for load balancing
 
 # ============================================================================
 # CONFIGURATION MANAGEMENT
@@ -197,6 +198,35 @@ def get_epg(provider: dict, stream_id: str) -> dict:
 # ============================================================================
 # STREAM MANAGEMENT
 # ============================================================================
+
+def select_best_url(source_id: str, urls: list) -> list:
+    """
+    Round-robin load balancing: pick URL with fewest active streams.
+    Returns URLs reordered with best choice first.
+    """
+    if len(urls) <= 1:
+        return urls
+
+    # Count active streams per URL for this source
+    url_usage = {}
+    for url in urls:
+        url_usage[url] = 0
+
+    for key, stream in streams.items():
+        # Only count streams from the same source
+        if key.startswith(f"{source_id}:"):
+            current_idx = stream.get('current_url_idx')
+            if current_idx is not None and current_idx < len(stream.get('urls', [])):
+                current_url = stream['urls'][current_idx]
+                if current_url in url_usage:
+                    url_usage[current_url] += 1
+
+    # Sort URLs by usage (least used first)
+    sorted_urls = sorted(urls, key=lambda url: url_usage.get(url, 0))
+
+    log.info(f"Load balancing {source_id}: {[(url.split('/')[2], url_usage.get(url, 0)) for url in sorted_urls[:3]]}")
+
+    return sorted_urls
 
 def check_source_health(url: str) -> bool:
     """Check if a source URL is available"""
@@ -421,7 +451,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 if config['fallback_mode']:
                     urls = [FALLBACK_URL]
                 else:
-                    urls = [u.format(channel_id=channel_id) for u in config['sources'].get(source_id, [])]
+                    # Get all URLs for this source
+                    source_urls = [u.format(channel_id=channel_id) for u in config['sources'].get(source_id, [])]
+
+                    # Load balance: reorder URLs to use least-busy server first
+                    urls = select_best_url(source_id, source_urls)
+
                     # Automatically append fallback video as last resort (if enabled)
                     if config.get('auto_fallback', True) and urls and FALLBACK_URL not in urls:
                         urls.append(FALLBACK_URL)

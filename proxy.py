@@ -14,6 +14,8 @@ import requests
 import json
 import os
 import re
+import queue
+import random
 from typing import Dict, List, Optional, Tuple
 import logging
 from flask import Flask, jsonify, request, send_file, Response
@@ -28,12 +30,14 @@ PROXY_PORT = 9000              # Stream proxy port
 API_PORT = 9005                # Web interface port
 
 # Stream Settings
-FFMPEG_BUFFER = 262144         # Buffer size (256KB - larger for multiple streams)
+FFMPEG_BUFFER = 65536          # Buffer size (64KB chunks for queue)
+BUFFER_QUEUE_SIZE = 200        # Queue size: 200 * 64KB = ~12MB buffer
 CLEANUP_DELAY = 5              # Seconds before cleanup
 COOLDOWN_TIME = 2              # Cooldown after failure
 STARTUP_TIMEOUT = 10           # Max wait for stream start
 SOURCE_RETRY_INTERVAL = 60     # Retry failed sources every N seconds
 SOURCE_CHECK_TIMEOUT = 5       # Timeout for source health checks
+NETWORK_TIMEOUT = 10000000     # 10s timeout for FFMPEG (microseconds)
 
 # TVHeadend Settings (loaded from config)
 TVH_CHECK_INTERVAL = 3         # Check every N seconds
@@ -201,32 +205,19 @@ def get_epg(provider: dict, stream_id: str) -> dict:
 
 def select_best_url(source_id: str, urls: list) -> list:
     """
-    Round-robin load balancing: pick URL with fewest active streams.
-    Returns URLs reordered with best choice first.
+    Randomized load balancing: shuffle URLs to distribute load across servers.
+    Returns URLs in random order to avoid all streams hitting the same server.
     """
     if len(urls) <= 1:
         return urls
 
-    # Count active streams per URL for this source
-    url_usage = {}
-    for url in urls:
-        url_usage[url] = 0
+    # Shuffle URLs for random distribution - prevents thundering herd
+    shuffled_urls = urls[:]
+    random.shuffle(shuffled_urls)
 
-    for key, stream in streams.items():
-        # Only count streams from the same source
-        if key.startswith(f"{source_id}:"):
-            current_idx = stream.get('current_url_idx')
-            if current_idx is not None and current_idx < len(stream.get('urls', [])):
-                current_url = stream['urls'][current_idx]
-                if current_url in url_usage:
-                    url_usage[current_url] += 1
+    log.info(f"Load balancing {source_id}: Randomized {len(shuffled_urls)} URLs (first: {shuffled_urls[0].split('/')[2] if shuffled_urls else 'none'})")
 
-    # Sort URLs by usage (least used first)
-    sorted_urls = sorted(urls, key=lambda url: url_usage.get(url, 0))
-
-    log.info(f"Load balancing {source_id}: {[(url.split('/')[2], url_usage.get(url, 0)) for url in sorted_urls[:3]]}")
-
-    return sorted_urls
+    return shuffled_urls
 
 def check_source_health(url: str) -> bool:
     """Check if a source URL is available"""
@@ -255,13 +246,16 @@ def restart_stream_with_source(key: str, source_idx: int):
         if stream['clients'] == 0:
             return False  # No active clients
 
-        # Kill current ffmpeg process
+        # Kill current ffmpeg process (producer will restart with new URLs)
         if stream.get('proc'):
             try:
-                stream['proc'].kill()
-                stream['proc'].wait(timeout=2)
+                stream['proc'].terminate()
+                stream['proc'].wait(timeout=1)
             except:
-                pass
+                try:
+                    stream['proc'].kill()
+                except:
+                    pass
 
         # Update to use only the working source (plus fallback at end)
         working_url = stream['urls'][source_idx]
@@ -270,129 +264,156 @@ def restart_stream_with_source(key: str, source_idx: int):
             stream['urls'].append(FALLBACK_URL)
 
         stream['proc'] = None
-        stream['pipe'] = None
         stream['on_fallback'] = False
         stream['last_retry'] = time.time()
 
         log.info(f"Recovering {key} - switching from fallback to source [{source_idx+1}]")
 
-    # Start with the working source
-    start_stream(key)
+    # Producer thread will automatically pick up new URLs and restart
     return True
 
-def start_stream(key: str):
-    """Start FFMPEG for stream"""
-    def run():
+def stream_producer(key: str):
+    """
+    Producer thread: Manages FFMPEG process and feeds data into queue.
+    If FFMPEG dies, restarts it while keeping queue alive (no client disconnect).
+    """
+    log.info(f"Producer started: {key}")
+
+    while True:
+        # Check stream still exists and has clients
         with lock:
             if key not in streams:
-                return
+                break
             stream = streams[key]
-        
+            if stream['clients'] <= 0:
+                break
+
         urls = stream['urls']
+
+        # Try each URL (failover)
         for idx, url in enumerate(urls):
             is_fallback = (url == FALLBACK_URL)
-            source_type = "FALLBACK" if is_fallback else f"{idx+1}/{len(urls)}"
-            log.info(f"Starting {key} [{source_type}]" + (" - Using fallback video" if is_fallback else ""))
 
-            # Update stream tracking
             with lock:
-                if key in streams:
-                    streams[key]['current_url_idx'] = idx
-                    streams[key]['on_fallback'] = is_fallback
+                if key not in streams:
+                    break
+                streams[key]['current_url_idx'] = idx
+                streams[key]['on_fallback'] = is_fallback
 
-            cmd = ["nice", "-n", "10", "ffmpeg"]
+            log.info(f"Starting {key} [{idx+1}/{len(urls)}]" + (" - Fallback" if is_fallback else ""))
+
+            # Build FFMPEG command
+            cmd = ["ffmpeg"]
+
             if is_fallback:
                 cmd.extend(["-stream_loop", "-1", "-re"])
-            
+
             cmd.extend([
-            "-loglevel", "error", "-user_agent", "VLC/3.0.20",
-            # Network reconnection
-            "-reconnect", "1", "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "10",
-            # Balanced stream analysis - enough for audio detection, not too slow
-            "-analyzeduration", "7000000",   # 7M - sweet spot
-            "-probesize", "15000000",        # 15M - reasonable
-            # Input flags - forgiving but not excessive
-            "-fflags", "+genpts+igndts+discardcorrupt",
-            "-err_detect", "ignore_err",
-            "-i", url,
-            # Map streams
-            "-map", "0:v?",  # All video streams
-            "-map", "0:a?",  # All audio streams
-            "-map", "0:s?",  # All subtitles
-            # Copy codecs
-            "-c", "copy",
-            # Fix timestamp issues
-            "-avoid_negative_ts", "make_zero",
-            "-start_at_zero",
-            # Audio/video sync - moderate tolerance
-            "-async", "1",
-            "-vsync", "passthrough",
-            # Output format
-            "-f", "mpegts",
-            "-flush_packets", "1",
-            "pipe:1"
+                "-loglevel", "error", "-user_agent", "VLC/3.0.20",
+                # Network reconnection
+                "-reconnect", "1", "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "10",
             ])
-            
+
+            cmd.extend([
+                # Balanced stream analysis - enough for audio detection
+                "-analyzeduration", "7000000",   # 7M - sweet spot
+                "-probesize", "15000000",        # 15M - reasonable
+                # Input flags - forgiving but not excessive
+                "-fflags", "+genpts+igndts+discardcorrupt",
+                "-err_detect", "ignore_err",
+                "-i", url,
+                # Map streams
+                "-map", "0:v?",  # All video streams
+                "-map", "0:a?",  # All audio streams
+                "-map", "0:s?",  # All subtitles
+                # Copy codecs
+                "-c", "copy",
+                # Fix timestamp issues
+                "-avoid_negative_ts", "make_zero",
+                "-start_at_zero",
+                # Audio/video sync
+                "-async", "1",
+                "-vsync", "passthrough",
+                # Output format
+                "-f", "mpegts",
+                "-flush_packets", "1",
+                "pipe:1"
+            ])
+
+            proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=FFMPEG_BUFFER)
-            except Exception as e:
-                log.error(f"FFMPEG failed: {e}")
+
                 with lock:
                     if key in streams:
-                        streams[key]['error'] = str(e)
-                break
-            
-            with lock:
-                if key in streams:
-                    streams[key]['proc'] = proc
-                    streams[key]['pipe'] = proc.stdout
-                    streams[key]['error'] = None
-                else:
-                    proc.kill()
-                    return
-            
-            # Monitor errors
-            def log_errors():
-                errors = []
-                for line in iter(proc.stderr.readline, b''):
-                    s = line.decode('utf-8', errors='ignore').strip()
-                    log.warning(f"FFMPEG_STDERR: {key} - {s}") # <-- ADD THIS LINE
-                    if 'error' in s.lower():
-                        errors.append(s)
-                if errors:
+                        streams[key]['proc'] = proc
+
+                # Error logging thread
+                def log_err():
+                    for line in iter(proc.stderr.readline, b''):
+                        pass  # Suppress for performance (already working)
+                threading.Thread(target=log_err, daemon=True).start()
+
+                # Read from FFMPEG and feed queue
+                while True:
+                    # Check if stream still has clients
                     with lock:
-                        if key in streams:
-                            streams[key]['error'] = errors[-1]
-            
-            t = threading.Thread(target=log_errors, daemon=True)
-            t.start()
-            
-            ret = proc.wait()
-            t.join(timeout=2)
+                        if key not in streams or streams[key]['clients'] <= 0:
+                            if proc:
+                                try:
+                                    proc.terminate()
+                                    proc.wait(timeout=1)
+                                except:
+                                    try:
+                                        proc.kill()
+                                    except:
+                                        pass
+                            return
 
+                    chunk = proc.stdout.read(FFMPEG_BUFFER)
+                    if not chunk:
+                        break  # FFMPEG ended, restart
+
+                    try:
+                        # Put data in queue (with timeout for backpressure)
+                        stream['buffer'].put(chunk, timeout=5)
+                    except queue.Full:
+                        continue  # Queue full, try again
+
+            except Exception as e:
+                log.error(f"Producer error {key}: {e}")
+            finally:
+                if proc:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1)
+                    except:
+                        try:
+                            proc.kill()
+                        except:
+                            pass
+
+            # FFMPEG died, log and restart
+            log.warning(f"Source {idx+1} for {key} ended, restarting...")
+            time.sleep(1)  # Brief delay before restart
+
+            # Check if we should continue
             with lock:
-                if key in streams:
-                    streams[key]['proc'] = None
-                    streams[key]['pipe'] = None
+                if key not in streams or streams[key]['clients'] <= 0:
+                    return
 
-            # Exit code 0 = normal end, -9 = SIGKILL (TVH disconnect)
-            if ret == 0 or ret == -9:
-                log.info(f"Stream {key} ended normally (code {ret})")
-                return
+        # All URLs failed, wait before retry
+        time.sleep(1)
 
-            log.warning(f"Stream {key} failed (code {ret})")
-            time.sleep(0.5)
-        
-        # All failed
-        with lock:
-            cooldowns[key] = time.time() + COOLDOWN_TIME
-        cleanup_stream(key)
-    
-    threading.Thread(target=run, daemon=True).start()
+    log.info(f"Producer ended: {key}")
+
+def start_stream(key: str):
+    """Start producer thread for stream"""
+    threading.Thread(target=stream_producer, args=(key,), daemon=True).start()
 
 def cleanup_stream(key: str, delay: int = 0):
-    """Clean up stream"""
+    """Clean up stream and stop producer"""
     def do_cleanup():
         with lock:
             if key not in streams:
@@ -400,15 +421,20 @@ def cleanup_stream(key: str, delay: int = 0):
             s = streams[key]
             if delay > 0 and s['clients'] > 0:
                 return
+            # Setting clients to 0 will signal producer to stop
+            s['clients'] = 0
             if s.get('proc'):
                 try:
-                    s['proc'].kill()
-                    s['proc'].wait(timeout=2)
+                    s['proc'].terminate()
+                    s['proc'].wait(timeout=1)
                 except:
-                    pass
+                    try:
+                        s['proc'].kill()
+                    except:
+                        pass
             log.info(f"Cleaned up: {key}")
             del streams[key]
-    
+
     if delay > 0:
         threading.Timer(delay, do_cleanup).start()
     else:
@@ -463,8 +489,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         log.info(f"Auto-fallback enabled for {key}")
 
                 streams[key] = {
-                    'proc': None, 'pipe': None, 'clients': 0,
-                    'urls': urls, 'created': time.time(), 'error': None,
+                    'buffer': queue.Queue(maxsize=BUFFER_QUEUE_SIZE),  # Persistent buffer
+                    'proc': None, 'clients': 0,
+                    'urls': urls, 'created': time.time(),
                     'current_url_idx': None,  # Track which URL is currently playing
                     'on_fallback': False,      # Track if using fallback video
                     'last_retry': 0            # Last time we checked sources
@@ -473,48 +500,47 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 start_stream(key)
             
             streams[key]['clients'] += 1
+            stream_buffer = streams[key]['buffer']  # Get buffer reference
             log.info(f"Client connected: {key} (total: {streams[key]['clients']})")
-        
-        # Wait for start
+
+        # Wait for first data in buffer
         wait = 0
         while wait < STARTUP_TIMEOUT:
             with lock:
                 s = streams.get(key)
-                if s and s.get('proc') and s.get('pipe'):
+                if s and s.get('proc'):
                     break
-                if s and s.get('error'):
-                    with lock:
-                        streams[key]['clients'] -= 1
-                    self.send_error(503)
-                    return
             time.sleep(0.1)
             wait += 0.1
-        
-        with lock:
-            s = streams.get(key)
-            if not s or not s.get('pipe'):
-                if s:
-                    s['clients'] -= 1
-                self.send_error(503)
-                return
-            pipe = s['pipe']
-            proc = s['proc']
-        
+
         # Send stream
         self.send_response(200)
         self.send_header("Content-Type", "video/MP2T")
         self.end_headers()
-        
+
+        # Read from queue (consumer)
+        empty_reads = 0
         try:
             while True:
-                if proc.poll() is not None or pipe.closed:
-                    break
-                data = pipe.read(FFMPEG_BUFFER)
-                if not data:
-                    break
                 try:
-                    self.wfile.write(data)
-                except:
+                    # Wait for data in queue (timeout 10s)
+                    # Producer may restart FFMPEG, causing brief empty periods
+                    # We wait instead of closing connection
+                    chunk = stream_buffer.get(timeout=10)
+                    self.wfile.write(chunk)
+                    empty_reads = 0
+                except queue.Empty:
+                    # No data for 10s - producer might be struggling
+                    empty_reads += 1
+                    if empty_reads > 3:  # 30s without data = give up
+                        log.warning(f"Timeout waiting for data: {key}")
+                        break
+                    continue
+                except (BrokenPipeError, ConnectionResetError):
+                    # Client disconnected
+                    break
+                except Exception as e:
+                    log.error(f"Stream error: {e}")
                     break
         except:
             pass
@@ -643,9 +669,9 @@ def api_status():
             s.append({
                 'key': key,
                 'clients': c,
+                'queue_size': stream['buffer'].qsize() if stream.get('buffer') else 0,
                 'age': int(time.time() - stream['created']),
                 'url': stream['urls'][stream.get('current_url_idx', 0)] if stream.get('urls') else 'N/A',
-                'error': stream.get('error'),
                 'on_fallback': on_fallback,
                 'next_retry': next_retry
             })

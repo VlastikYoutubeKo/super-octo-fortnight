@@ -351,8 +351,11 @@ def stream_producer(key: str):
 
                 # Error logging thread
                 def log_err():
-                    for line in iter(proc.stderr.readline, b''):
-                        pass  # Suppress for performance (already working)
+                    try:
+                        for line in iter(proc.stderr.readline, b''):
+                            pass  # Suppress for performance (already working)
+                    except (ValueError, OSError):
+                        pass  # Process terminated, stderr closed
                 threading.Thread(target=log_err, daemon=True).start()
 
                 # Read from FFMPEG and feed queue

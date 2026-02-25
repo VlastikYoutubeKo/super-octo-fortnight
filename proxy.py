@@ -68,14 +68,14 @@ log = logging.getLogger(__name__)
 config = {
     'sources': {
         "1": [
-            "http://tvsystem.my:80/live/cynessanya/cynessanya/{channel_id}.ts",
-            "http://tv1.tvsystem.my:80/live/cynessanya/cynessanya/{channel_id}.ts",
-            "http://tv2.tvsystem.my:80/live/cynessanya/cynessanya/{channel_id}.ts",
-            "http://tv3.tvsystem.my:80/live/cynessanya/cynessanya/{channel_id}.ts",
-            "http://line.argontv.nl:80/live/cynessanya/cynessanya/{channel_id}.ts"
+            "http://tvsystem.my:80/live/f/uu/{channel_id}.ts",
+            "http://tv1.tvsystem.my:80/live/f/u/{channel_id}.ts",
+            "http://tv2.tvsystem.my:80/live/f/u/{channel_id}.ts",
+            "http://tv3.tvsystem.my:80/live/f/u/{channel_id}.ts",
+            "http://line.argontv.nl:80/live/fu/u/{channel_id}.ts"
         ],
         "2": [
-            "http://cynessa.ottb.xyz:80/live/televizekokotu/televizekokotu/{channel_id}.ts"
+            "http://cynessa.ottb.xyz:80/live/fuck/fuck/{channel_id}.ts"
         ]
     },
     'xtream_providers': {},

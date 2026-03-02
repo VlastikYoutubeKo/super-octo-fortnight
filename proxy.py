@@ -1,846 +1,723 @@
 #!/usr/bin/env python3
 """
-IPTV Stream Proxy Manager
-Complete production system with Xtream Codes support
+IPTV Stream Proxy Manager V4.2 (Ultimate Hybrid - Syntax Fixed & Redacted)
+Oprava syntaxe, Anti-Ban maskování a fixace audia (PAT/PMT) pro Tvheadend.
+Citlivé údaje byly odstraněny a nahrazeny zástupnými hodnotami.
 """
 
 import subprocess
 import threading
 import http.server
 import socketserver
+import socket
 import time
 import sys
 import requests
 import json
 import os
-import re
 import queue
 import random
-from typing import Dict, List, Optional, Tuple
+import collections
+import re
+from urllib.parse import urlparse
+from typing import Dict, List, Optional, Tuple, Set, Any
 import logging
 from flask import Flask, jsonify, request, send_file, Response
 from requests.auth import HTTPDigestAuth
+import urllib3
+
+# Potlačení varování pro nešifrovaná IPTV připojení
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================================
-# CONFIGURATION
+# CONSTANTS & CONFIGURATION
 # ============================================================================
 
-# Server Configuration
-PROXY_PORT = 9000              # Stream proxy port
-API_PORT = 9005                # Web interface port
+PROXY_PORT = 9000
+API_PORT = 9005
+FFMPEG_BUFFER = 65536
+BUFFER_QUEUE_SIZE = 300
+CLEANUP_DELAY = 15
+COOLDOWN_TIME = 2
+STARTUP_TIMEOUT = 15
+STARTUP_BUFFER_CHUNKS = 2
+SOURCE_RETRY_INTERVAL = 60
+DATA_TIMEOUT = 30
+TVH_CHECK_INTERVAL = 3
+TVH_GRACE_PERIOD = 15
 
-# Stream Settings
-FFMPEG_BUFFER = 65536          # Buffer size (64KB chunks for queue)
-BUFFER_QUEUE_SIZE = 200        # Queue size: 200 * 64KB = ~12MB buffer
-CLEANUP_DELAY = 5              # Seconds before cleanup
-COOLDOWN_TIME = 2              # Cooldown after failure
-STARTUP_TIMEOUT = 10           # Max wait for stream start
-SOURCE_RETRY_INTERVAL = 60     # Retry failed sources every N seconds
-SOURCE_CHECK_TIMEOUT = 5       # Timeout for source health checks
-NETWORK_TIMEOUT = 10000000     # 10s timeout for FFMPEG (microseconds)
-
-# TVHeadend Settings (loaded from config)
-TVH_CHECK_INTERVAL = 3         # Check every N seconds
-TVH_GRACE_PERIOD = 10          # Grace before cleanup
-
-# Paths
+FALLBACK_URL = "http://example.com/fallback.mp4"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, 'config.json')
+WHITELIST_DOMAINS = ["example.com", "whitelist.example.org"]
 
-# Fallback URL when all sources fail
-FALLBACK_URL = "https://theariatv.github.io/channeldead.mp4"
-
-# ============================================================================
-# LOGGING
-# ============================================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
 # ============================================================================
-# GLOBAL STATE
+# REALISTIC USER-AGENT BANK
 # ============================================================================
-
-config = {
-    'sources': {
-        "1": [
-            "http://tvsystem.my:80/live/f/uu/{channel_id}.ts",
-            "http://tv1.tvsystem.my:80/live/f/u/{channel_id}.ts",
-            "http://tv2.tvsystem.my:80/live/f/u/{channel_id}.ts",
-            "http://tv3.tvsystem.my:80/live/f/u/{channel_id}.ts",
-            "http://line.argontv.nl:80/live/fu/u/{channel_id}.ts"
-        ],
-        "2": [
-            "http://cynessa.ottb.xyz:80/live/fuck/fuck/{channel_id}.ts"
-        ]
-    },
-    'xtream_providers': {},
-    'fallback_mode': False,
-    'auto_fallback': True,  # Automatically use fallback video when all sources fail
-    'tvheadend': {
-        'url': 'http://192.168.1.135:9981',
-        'username': 'temp_admin',
-        'password': 'temp123'
-    }
-}
-
-streams = {}
-cooldowns = {}
-lock = threading.RLock()
-start_time = time.time()
-url_counters = {}  # Track active streams per source URL for load balancing
+REAL_UAS = [
+    "VLC/3.0.20 LibVLC/3.0.20",
+    "VLC/3.0.18 LibVLC/3.0.18",
+    "TiviMate/4.7.0",
+    "TiviMate/4.6.1",
+    "Kodi/20.1 (X11; Linux x86_64) App_Bitness/64 Version/20.1-Nexus",
+    "Kodi/19.4 (Windows NT 10.0; Win64; x64) App_Bitness/64 Version/19.4-Matrix",
+    "ExoPlayer/2.18.1",
+    "ExoPlayer/2.17.1",
+    "SmartIPTV",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+]
 
 # ============================================================================
-# CONFIGURATION MANAGEMENT
+# SECURITY MANAGER
 # ============================================================================
 
-def load_config():
-    """Load configuration from file"""
-    global config
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                loaded = json.load(f)
-                config.update(loaded)
-            log.info(f"Loaded config from {CONFIG_FILE}")
-        except Exception as e:
-            log.error(f"Failed to load config: {e}")
-    
-    # Auto-detect Xtream providers
-    detect_xtream()
-    save_config()
+class SecurityManager:
+    def __init__(self):
+        self.allowed_ips_cache: Set[str] = set(["127.0.0.1", "::1"])
+        self.last_dns_check = 0
 
-def save_config():
-    """Save configuration to file"""
-    try:
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
-        log.info("Config saved")
-        return True
-    except Exception as e:
-        log.error(f"Failed to save config: {e}")
-        return False
-
-# ============================================================================
-# XTREAM CODES
-# ============================================================================
-
-def parse_xtream(url: str) -> Optional[Tuple[str, str, str, str]]:
-    """Extract Xtream credentials from URL"""
-    pattern = r'https?://([^:]+):(\d+)/(?:live|movie|series)/([^/]+)/([^/]+)/\{channel_id\}'
-    match = re.match(pattern, url)
-    if match:
-        return match.groups()
-    return None
-
-def detect_xtream():
-    """Auto-detect Xtream providers from sources"""
-    providers = {}
-    
-    for source_id, urls in config['sources'].items():
-        for url in urls:
-            parsed = parse_xtream(url)
-            if parsed:
-                server, port, user, password = parsed
-                provider_id = f"{server}_{user}"
-                
-                if provider_id not in config.get('xtream_providers', {}):
-                    providers[provider_id] = {
-                        'name': server,
-                        'url': f"http://{server}:{port}",
-                        'username': user,
-                        'password': password,
-                        'source_id': source_id
-                    }
-    
-    if providers:
-        if 'xtream_providers' not in config:
-            config['xtream_providers'] = {}
-        config['xtream_providers'].update(providers)
-        log.info(f"Detected {len(providers)} Xtream providers")
-
-def xtream_api(provider: dict, action: str = None, **params) -> Optional[dict]:
-    """Call Xtream Codes API"""
-    try:
-        url = f"{provider['url']}/player_api.php"
-        p = {'username': provider['username'], 'password': provider['password']}
-        if action:
-            p['action'] = action
-        p.update(params)
-        
-        r = requests.get(url, params=p, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        log.error(f"Xtream API error: {e}")
-        return None
-
-def get_categories(provider: dict, cat_type: str = 'live') -> List[dict]:
-    """Get Xtream categories"""
-    actions = {'live': 'get_live_categories', 'vod': 'get_vod_categories', 'series': 'get_series_categories'}
-    result = xtream_api(provider, actions.get(cat_type))
-    if result and isinstance(result, list):
-        return [{'id': str(c.get('category_id')), 'name': c.get('category_name')} for c in result]
-    return []
-
-def get_streams(provider: dict, cat_id: str = None, stream_type: str = 'live') -> List[dict]:
-    """Get Xtream streams"""
-    actions = {'live': 'get_live_streams', 'vod': 'get_vod_streams', 'series': 'get_series'}
-    params = {'category_id': cat_id} if cat_id else {}
-    result = xtream_api(provider, actions.get(stream_type), **params)
-    return result if isinstance(result, list) else []
-
-def get_epg(provider: dict, stream_id: str) -> dict:
-    """Get EPG data"""
-    result = xtream_api(provider, 'get_short_epg', stream_id=stream_id, limit=10)
-    return result if result else {}
-
-# ============================================================================
-# STREAM MANAGEMENT
-# ============================================================================
-
-def select_best_url(source_id: str, urls: list) -> list:
-    """
-    Randomized load balancing: shuffle URLs to distribute load across servers.
-    Returns URLs in random order to avoid all streams hitting the same server.
-    """
-    if len(urls) <= 1:
-        return urls
-
-    # Shuffle URLs for random distribution - prevents thundering herd
-    shuffled_urls = urls[:]
-    random.shuffle(shuffled_urls)
-
-    log.info(f"Load balancing {source_id}: Randomized {len(shuffled_urls)} URLs (first: {shuffled_urls[0].split('/')[2] if shuffled_urls else 'none'})")
-
-    return shuffled_urls
-
-def check_source_health(url: str) -> bool:
-    """Check if a source URL is available"""
-    if url == FALLBACK_URL:
-        return False  # Don't check fallback URL
-
-    try:
-        # Quick HEAD request to check if source is available
-        response = requests.head(url.replace('{channel_id}', '1'), timeout=SOURCE_CHECK_TIMEOUT, allow_redirects=True)
-        # Consider 200, 302, 404 as "server is up" - 404 just means channel doesn't exist
-        # We care about connectivity, not specific channel availability
-        return response.status_code in [200, 302, 404]
-    except:
-        return False
-
-def restart_stream_with_source(key: str, source_idx: int):
-    """Restart a stream with a specific source URL"""
-    with lock:
-        if key not in streams:
-            return False
-
-        stream = streams[key]
-        if not stream.get('on_fallback'):
-            return False  # Not on fallback, no need to restart
-
-        if stream['clients'] == 0:
-            return False  # No active clients
-
-        # Kill current ffmpeg process (producer will restart with new URLs)
-        if stream.get('proc'):
-            try:
-                stream['proc'].terminate()
-                stream['proc'].wait(timeout=1)
-            except:
+    def get_allowed_ips(self) -> Set[str]:
+        now = time.time()
+        if now - self.last_dns_check > 300:
+            new_ips = set(["127.0.0.1", "::1"])
+            for dom in WHITELIST_DOMAINS:
                 try:
-                    stream['proc'].kill()
-                except:
+                    ips = socket.gethostbyname_ex(dom)[2]
+                    new_ips.update(ips)
+                except Exception:
                     pass
+            self.allowed_ips_cache = new_ips
+            self.last_dns_check = now
+            log.info(f"Updated allowed IPs whitelist: {self.allowed_ips_cache}")
+        return self.allowed_ips_cache
 
-        # Update to use only the working source (plus fallback at end)
-        working_url = stream['urls'][source_idx]
-        stream['urls'] = [working_url]
-        if FALLBACK_URL not in stream['urls']:
-            stream['urls'].append(FALLBACK_URL)
+    def is_allowed(self, ip: str) -> bool:
+        return ip in self.get_allowed_ips()
 
-        stream['proc'] = None
-        stream['on_fallback'] = False
-        stream['last_retry'] = time.time()
+security = SecurityManager()
 
-        log.info(f"Recovering {key} - switching from fallback to source [{source_idx+1}]")
+# ============================================================================
+# APP CONFIGURATION
+# ============================================================================
 
-    # Producer thread will automatically pick up new URLs and restart
-    return True
+class AppConfig:
+    def __init__(self):
+        self.data = {
+            'sources': {
+                "source1": ["http://provider1.example.com/live/username/password/{channel_id}.ts"],
+                "source2": ["http://provider2.example.com/live/username/password/{channel_id}.ts"]
+            },
+            'xtream_providers': {},
+            'fallback_mode': False,
+            'auto_fallback': True,
+            'tvheadend': {
+                'url': 'http://127.0.0.1:9981',
+                'username': 'admin',
+                'password': 'password'
+            }
+        }
+        self.load()
 
-def stream_producer(key: str):
-    """
-    Producer thread: Manages FFMPEG process and feeds data into queue.
-    If FFMPEG dies, restarts it while keeping queue alive (no client disconnect).
-    """
-    log.info(f"Producer started: {key}")
+    def load(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    self.data.update(json.load(f))
+            except Exception as e:
+                log.error(f"Failed to load config: {e}")
+        self.detect_xtream()
+        self.save()
 
-    while True:
-        # Check stream still exists and has clients
-        with lock:
-            if key not in streams:
-                break
-            stream = streams[key]
-            if stream['clients'] <= 0:
-                break
+    def save(self):
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(self.data, f, indent=2)
+        except Exception:
+            pass
 
-        urls = stream['urls']
+    def update(self, new_data: Dict):
+        self.data.update(new_data)
+        self.detect_xtream()
+        self.save()
 
-        # Try each URL (failover)
-        for idx, url in enumerate(urls):
+    def get_random_proxy(self) -> Optional[str]:
+        proxies = self.data.get('proxies', [])
+        return random.choice(proxies) if proxies else None
+
+    def detect_xtream(self):
+        providers = {}
+        pattern = r'https?://([^:]+):?(\d+)?/(?:live|movie|series)/([^/]+)/([^/]+)/\{channel_id\}'
+
+        for source_id, urls in self.data['sources'].items():
+            for url in urls:
+                match = re.match(pattern, url)
+                if match:
+                    groups = match.groups()
+                    server = groups[0]
+                    port = groups[1] or "80"
+                    user = groups[2]
+                    password = groups[3]
+                    provider_id = f"{server}_{user}"
+                    if provider_id not in self.data.get('xtream_providers', {}):
+                        providers[provider_id] = {
+                            'name': server,
+                            'url': f"http://{server}:{port}",
+                            'username': user,
+                            'password': password,
+                            'source_id': source_id
+                        }
+        if providers:
+            self.data.setdefault('xtream_providers', {}).update(providers)
+
+config = AppConfig()
+
+# ============================================================================
+# XTREAM API
+# ============================================================================
+
+class XtreamAPI:
+    @staticmethod
+    def call(provider: dict, action: str = None, **params) -> Optional[Any]:
+        try:
+            url = f"{provider['url']}/player_api.php"
+            p = {'username': provider['username'], 'password': provider['password']}
+            if action: p['action'] = action
+            p.update(params)
+
+            proxy_url = config.get_random_proxy()
+            req_proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+            r = requests.get(url, params=p, timeout=10, proxies=req_proxies, verify=False)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_categories(provider: dict, cat_type: str = 'live') -> List[dict]:
+        actions = {'live': 'get_live_categories', 'vod': 'get_vod_categories', 'series': 'get_series_categories'}
+        res = XtreamAPI.call(provider, actions.get(cat_type))
+        if isinstance(res, list):
+            return [{'id': str(c.get('category_id')), 'name': c.get('category_name')} for c in res]
+        return []
+
+    @staticmethod
+    def get_streams(provider: dict, cat_id: str = None, stream_type: str = 'live') -> List[dict]:
+        actions = {'live': 'get_live_streams', 'vod': 'get_vod_streams', 'series': 'get_series'}
+        params = {'category_id': cat_id} if cat_id else {}
+        res = XtreamAPI.call(provider, actions.get(stream_type), **params)
+        return res if isinstance(res, list) else []
+
+    @staticmethod
+    def get_epg(provider: dict, stream_id: str) -> dict:
+        res = XtreamAPI.call(provider, 'get_short_epg', stream_id=stream_id, limit=10)
+        return res if res else {}
+
+    @staticmethod
+    def get_vod_info(provider: dict, vod_id: str) -> dict:
+        res = XtreamAPI.call(provider, 'get_vod_info', vod_id=vod_id)
+        return res if res else {}
+
+    @staticmethod
+    def get_series_info(provider: dict, series_id: str) -> dict:
+        res = XtreamAPI.call(provider, 'get_series_info', series_id=series_id)
+        return res if res else {}
+
+    @staticmethod
+    def get_full_epg(provider: dict, stream_id: str) -> dict:
+        res = XtreamAPI.call(provider, 'get_simple_data_table', stream_id=stream_id)
+        return res if res else {}
+
+# ============================================================================
+# HYBRID STREAM MANAGER (FFmpeg Core)
+# ============================================================================
+
+class ActiveFFmpegStream:
+    def __init__(self, key: str, urls: List[str]):
+        self.key = key
+        self.urls = urls
+        self.clients = 0
+        self.client_queues: List[queue.Queue] = []
+        self.recent_chunks = collections.deque(maxlen=BUFFER_QUEUE_SIZE)
+        self.running = True
+        self.created = time.time()
+        self.last_client_time = time.time()
+        self.last_data_time = time.time()
+        self.proc: Optional[subprocess.Popen] = None
+        self.user_agent = random.choice(REAL_UAS)
+        
+        self.thread = threading.Thread(target=self._producer_loop, daemon=True)
+        self.thread.start()
+
+    def add_client(self) -> queue.Queue:
+        q = queue.Queue(maxsize=500)
+        with stream_mgr.lock:
+            for chunk in list(self.recent_chunks):
+                try: q.put_nowait(chunk)
+                except queue.Full: pass
+        
+        self.client_queues.append(q)
+        self.clients += 1
+        self.last_client_time = time.time()
+        return q
+
+    def remove_client(self, q: queue.Queue):
+        if q in self.client_queues:
+            self.client_queues.remove(q)
+            self.clients -= 1
+            self.last_client_time = time.time()
+
+    def stop(self):
+        self.running = False
+        self.recent_chunks.clear()
+        for q in self.client_queues:
+            try: q.put_nowait(None)
+            except queue.Full: pass
+        if self.proc:
+            try: self.proc.kill()
+            except: pass
+
+    def _producer_loop(self):
+        log.info(f" FFmpeg startuje stream {self.key} (Masking as: {self.user_agent.split('/')[0]})")
+        
+        url_idx = 0
+        while self.running:
+            url = self.urls[url_idx]
             is_fallback = (url == FALLBACK_URL)
 
-            with lock:
-                if key not in streams:
-                    break
-                streams[key]['current_url_idx'] = idx
-                streams[key]['on_fallback'] = is_fallback
-
-            log.info(f"Starting {key} [{idx+1}/{len(urls)}]" + (" - Fallback" if is_fallback else ""))
-
-            # Build FFMPEG command
-            cmd = ["ffmpeg"]
-
-            if is_fallback:
-                cmd.extend(["-stream_loop", "-1", "-re"])
-
+            cmd = ["ffmpeg", "-hide_banner"]
+            if is_fallback: cmd.extend(["-stream_loop", "-1", "-re"])
+            
             cmd.extend([
-                "-loglevel", "error", "-user_agent", "VLC/3.0.20",
-                # Network reconnection
-                "-reconnect", "1", "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "10",
-            ])
-
-            cmd.extend([
-                # Balanced stream analysis - enough for audio detection
-                "-analyzeduration", "7000000",   # 7M - sweet spot
-                "-probesize", "15000000",        # 15M - reasonable
-                # Input flags - forgiving but not excessive
+                "-loglevel", "fatal", 
+                "-user_agent", self.user_agent,
+                "-reconnect", "1", 
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-reconnect_on_http_error", "4xx,5xx",
+                
+                "-analyzeduration", "15000000",
+                "-probesize", "50000000",
+                
                 "-fflags", "+genpts+igndts+discardcorrupt",
-                "-err_detect", "ignore_err",
                 "-i", url,
-                # Map streams
-                "-map", "0:v?",  # All video streams
-                "-map", "0:a?",  # All audio streams
-                "-map", "0:s?",  # All subtitles
-                # Copy codecs
+                
+                "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?",
                 "-c", "copy",
-                # Fix timestamp issues
                 "-avoid_negative_ts", "make_zero",
-                "-start_at_zero",
-                # Audio/video sync
-                "-async", "1",
-                "-vsync", "passthrough",
-                # Output format
+                
+                "-mpegts_flags", "initial_discontinuity+resend_headers",
+                
                 "-f", "mpegts",
                 "-flush_packets", "1",
                 "pipe:1"
             ])
-
-            proc = None
+            
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=FFMPEG_BUFFER)
+                self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=FFMPEG_BUFFER)
+                self.last_data_time = time.time()
 
-                with lock:
-                    if key in streams:
-                        streams[key]['proc'] = proc
-
-                # Error logging thread
                 def log_err():
                     try:
-                        for line in iter(proc.stderr.readline, b''):
-                            pass  # Suppress for performance (already working)
-                    except (ValueError, OSError):
-                        pass  # Process terminated, stderr closed
+                        for line in iter(self.proc.stderr.readline, b''):
+                            line_str = line.decode('utf-8', 'ignore').strip()
+                            if line_str: log.error(f"FFMPEG {self.key}: {line_str}")
+                    except: pass
                 threading.Thread(target=log_err, daemon=True).start()
 
-                # Read from FFMPEG and feed queue
-                while True:
-                    # Check if stream still has clients
-                    with lock:
-                        if key not in streams or streams[key]['clients'] <= 0:
-                            if proc:
-                                try:
-                                    proc.terminate()
-                                    proc.wait(timeout=1)
-                                except:
-                                    try:
-                                        proc.kill()
-                                    except:
-                                        pass
-                            return
+                while self.running:
+                    if time.time() - self.last_data_time > DATA_TIMEOUT:
+                        log.warning(f" FFmpeg u {self.key} zamrzl. Zkouším jiný zdroj.")
+                        break
 
-                    chunk = proc.stdout.read(FFMPEG_BUFFER)
-                    if not chunk:
-                        break  # FFMPEG ended, restart
+                    chunk = self.proc.stdout.read(FFMPEG_BUFFER)
+                    if not chunk: 
+                        break
 
-                    try:
-                        # Put data in queue (with timeout for backpressure)
-                        stream['buffer'].put(chunk, timeout=5)
-                    except queue.Full:
-                        continue  # Queue full, try again
+                    self.last_data_time = time.time()
+                    
+                    with stream_mgr.lock:
+                        self.recent_chunks.append(chunk)
+                        for q in list(self.client_queues):
+                            try:
+                                q.put_nowait(chunk)
+                            except queue.Full:
+                                try: q.get_nowait(); q.put_nowait(chunk)
+                                except: pass
 
             except Exception as e:
-                log.error(f"Producer error {key}: {e}")
+                log.error(f" FFmpeg chyba {self.key}: {e}")
             finally:
-                if proc:
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=1)
-                    except:
-                        try:
-                            proc.kill()
-                        except:
-                            pass
+                if self.proc:
+                    try: self.proc.kill()
+                    except: pass
+            
+            if self.running:
+                log.warning(f" Zdroj {url.split('://')[0]} vypadl. Restart...")
+                time.sleep(1)
+                url_idx = (url_idx + 1) % len(self.urls)
+                with stream_mgr.lock:
+                    self.recent_chunks.clear()
 
-            # FFMPEG died, log and restart
-            log.warning(f"Source {idx+1} for {key} ended, restarting...")
-            time.sleep(1)  # Brief delay before restart
+class StreamManager:
+    def __init__(self):
+        self.streams: Dict = {}
+        self.cooldowns: Dict[str, float] = {}
+        self.lock = threading.RLock()
+        self.start_time = time.time()
+        threading.Thread(target=self._janitor_loop, daemon=True).start()
 
-            # Check if we should continue
-            with lock:
-                if key not in streams or streams[key]['clients'] <= 0:
-                    return
+    def get_best_urls(self, source_id: str, channel_id: str) -> List[str]:
+        if config.data.get('fallback_mode'):
+            return [FALLBACK_URL]
+        source_urls = [u.format(channel_id=channel_id) for u in config.data['sources'].get(source_id, [])]
+        if len(source_urls) > 1:
+            random.shuffle(source_urls)
+        if config.data.get('auto_fallback', True) and FALLBACK_URL not in source_urls:
+            source_urls.append(FALLBACK_URL)
+        return source_urls
 
-        # All URLs failed, wait before retry
-        time.sleep(1)
+    def get_or_create_stream(self, key: str, source_id: str, channel_id: str) -> Tuple:
+        with self.lock:
+            if key in self.streams:
+                return self.streams[key], False
+                
+            urls = self.get_best_urls(source_id, channel_id)
+            stream = ActiveFFmpegStream(key, urls)
+            self.streams[key] = stream
+            return stream, True
 
-    log.info(f"Producer ended: {key}")
+    def _janitor_loop(self):
+        while True:
+            time.sleep(3)
+            now = time.time()
+            with self.lock:
+                for key in list(self.streams.keys()):
+                    stream = self.streams[key]
+                    if stream.clients == 0 and (now - stream.last_client_time) > CLEANUP_DELAY:
+                        log.info(f" Úklid. Vypínám FFmpeg pro {key} (bez klientů {CLEANUP_DELAY}s).")
+                        stream.stop()
+                        del self.streams[key]
 
-def start_stream(key: str):
-    """Start producer thread for stream"""
-    threading.Thread(target=stream_producer, args=(key,), daemon=True).start()
+    def cleanup_stream(self, key: str, delay: int = 0):
+        with self.lock:
+            if key in self.streams:
+                self.streams[key].stop()
+                del self.streams[key]
 
-def cleanup_stream(key: str, delay: int = 0):
-    """Clean up stream and stop producer"""
-    def do_cleanup():
-        with lock:
-            if key not in streams:
-                return
-            s = streams[key]
-            if delay > 0 and s['clients'] > 0:
-                return
-            # Setting clients to 0 will signal producer to stop
-            s['clients'] = 0
-            if s.get('proc'):
-                try:
-                    s['proc'].terminate()
-                    s['proc'].wait(timeout=1)
-                except:
-                    try:
-                        s['proc'].kill()
-                    except:
-                        pass
-            log.info(f"Cleaned up: {key}")
-            del streams[key]
-
-    if delay > 0:
-        threading.Timer(delay, do_cleanup).start()
-    else:
-        do_cleanup()
+stream_mgr = StreamManager()
 
 # ============================================================================
-# HTTP PROXY
+# BACKGROUND MONITORS (TVH CHECK)
+# ============================================================================
+
+def monitor_tvh():
+    log.info("TVHeadend monitor started")
+    missing_since = {}
+    
+    while True:
+        try:
+            tvh = config.data.get('tvheadend', {})
+            active = set()
+            if tvh.get('url'):
+                r = requests.get(f"{tvh['url']}/api/status/subscriptions",
+                               auth=HTTPDigestAuth(tvh.get('username', ''), tvh.get('password', '')), timeout=5)
+                if r.status_code == 200:
+                    for sub in r.json().get('entries', []):
+                        url = sub.get('server_url', '')
+                        if url:
+                            parsed_url = urlparse(url)
+                            path = parsed_url.path.strip('/')
+                            parts = path.split('/')
+                            if len(parts) >= 2: 
+                                source_id = parts[-2]
+                                channel_id = parts[-1].rsplit('.', 1)[0]
+                                active.add(f"{source_id}:{channel_id}")
+                            
+            with stream_mgr.lock:
+                for key in list(stream_mgr.streams.keys()):
+                    stream = stream_mgr.streams[key]
+                    
+                    if stream.clients > 0:
+                        if key in missing_since:
+                            del missing_since[key]
+                        continue
+
+                    if key not in active:
+                        if key not in missing_since:
+                            missing_since[key] = time.time()
+                        elif (time.time() - missing_since[key]) > TVH_GRACE_PERIOD:
+                            log.info(f" TVH Monitor: Záchranný úklid pro mrtvý stream {key}.")
+                            stream_mgr.cleanup_stream(key)
+                    else:
+                        if key in missing_since:
+                            del missing_since[key]
+                            
+                for k in list(missing_since.keys()):
+                    if k not in stream_mgr.streams:
+                        del missing_since[k]
+                        
+        except Exception:
+            pass 
+            
+        with stream_mgr.lock:
+            expired = [k for k, v in stream_mgr.cooldowns.items() if time.time() > v]
+            for k in expired: del stream_mgr.cooldowns[k]
+            
+        time.sleep(TVH_CHECK_INTERVAL)
+
+# ============================================================================
+# HTTP PROXY SERVER
 # ============================================================================
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-    
+    def log_message(self, *args): pass
+    def log_error(self, format, *args): pass 
+
     def do_GET(self):
-        parts = self.path.strip("/").split("/")
-        if len(parts) < 2:
-            self.send_error(400)
+        client_ip = self.client_address[0]
+        if not security.is_allowed(client_ip):
+            self.send_error(403, "Forbidden")
             return
-        
+            
+        parts = self.path.strip("/").split("/")
+        if not parts or parts == [""]:
+            self.send_response(200); self.end_headers(); self.wfile.write(b"IPTV Proxy V4.2")
+            return
+            
+        if len(parts) < 2:
+            self.send_error(400); return
+            
         source_id = parts[0]
         channel_id = parts[1].rsplit('.', 1)[0]
         key = f"{source_id}:{channel_id}"
         
-        # Check cooldown
-        with lock:
-            if key in cooldowns:
-                remaining = int(cooldowns[key] - time.time())
-                if remaining > 0:
-                    self.send_error(503, f"Cooldown: {remaining}s")
-                    return
-        
-        # Check source exists
-        if source_id not in config['sources'] and not config['fallback_mode']:
-            self.send_error(404)
-            return
-        
-        # Create stream
-        with lock:
-            if key not in streams:
-                if config['fallback_mode']:
-                    urls = [FALLBACK_URL]
-                else:
-                    # Get all URLs for this source
-                    source_urls = [u.format(channel_id=channel_id) for u in config['sources'].get(source_id, [])]
+        with stream_mgr.lock:
+            if key in stream_mgr.cooldowns:
+                rem = int(stream_mgr.cooldowns[key] - time.time())
+                if rem > 0: self.send_error(503, f"Cooldown: {rem}s"); return
 
-                    # Load balance: reorder URLs to use least-busy server first
-                    urls = select_best_url(source_id, source_urls)
-
-                    # Automatically append fallback video as last resort (if enabled)
-                    if config.get('auto_fallback', True) and urls and FALLBACK_URL not in urls:
-                        urls.append(FALLBACK_URL)
-                        log.info(f"Auto-fallback enabled for {key}")
-
-                streams[key] = {
-                    'buffer': queue.Queue(maxsize=BUFFER_QUEUE_SIZE),  # Persistent buffer
-                    'proc': None, 'clients': 0,
-                    'urls': urls, 'created': time.time(),
-                    'current_url_idx': None,  # Track which URL is currently playing
-                    'on_fallback': False,      # Track if using fallback video
-                    'last_retry': 0            # Last time we checked sources
-                }
-                log.info(f"Created stream: {key}")
-                start_stream(key)
+        if source_id not in config.data['sources'] and not config.data.get('fallback_mode'):
+            self.send_error(404); return
             
-            streams[key]['clients'] += 1
-            stream_buffer = streams[key]['buffer']  # Get buffer reference
-            log.info(f"Client connected: {key} (total: {streams[key]['clients']})")
-
-        # Wait for first data in buffer
+        stream, _ = stream_mgr.get_or_create_stream(key, source_id, channel_id)
+        with stream_mgr.lock:
+            client_queue = stream.add_client()
+            
         wait = 0
         while wait < STARTUP_TIMEOUT:
-            with lock:
-                s = streams.get(key)
-                if s and s.get('proc'):
-                    break
+            if not stream.running:
+                break
+            if client_queue.qsize() > 0:
+                break
             time.sleep(0.1)
             wait += 0.1
+            
+        if not stream.running or client_queue.empty():
+            self.send_error(503, "Zdroj neposkytl data.")
+            with stream_mgr.lock:
+                stream.remove_client(client_queue)
+            return
 
-        # Send stream
         self.send_response(200)
         self.send_header("Content-Type", "video/MP2T")
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
-
-        # Read from queue (consumer)
-        empty_reads = 0
+        
         try:
             while True:
                 try:
-                    # Wait for data in queue (timeout 10s)
-                    # Producer may restart FFMPEG, causing brief empty periods
-                    # We wait instead of closing connection
-                    chunk = stream_buffer.get(timeout=10)
-                    self.wfile.write(chunk)
-                    empty_reads = 0
+                    chunk = client_queue.get(timeout=30)
                 except queue.Empty:
-                    # No data for 10s - producer might be struggling
-                    empty_reads += 1
-                    if empty_reads > 3:  # 30s without data = give up
-                        log.warning(f"Timeout waiting for data: {key}")
-                        break
-                    continue
-                except (BrokenPipeError, ConnectionResetError):
-                    # Client disconnected
-                    break
-                except Exception as e:
-                    log.error(f"Stream error: {e}")
-                    break
-        except:
-            pass
+                    break 
+                
+                if chunk is None: 
+                    break 
+                    
+                self.wfile.write(chunk)
+                
+        except Exception: 
+            pass 
         finally:
-            with lock:
-                if key in streams:
-                    streams[key]['clients'] -= 1
-                    log.info(f"Client disconnected: {key} (remaining: {streams[key]['clients']})")
-                    if streams[key]['clients'] == 0:
-                        cleanup_stream(key, delay=CLEANUP_DELAY)
+            with stream_mgr.lock:
+                if key in stream_mgr.streams:
+                    stream_mgr.streams[key].remove_client(client_queue)
 
 # ============================================================================
-# SOURCE RECOVERY MONITOR
-# ============================================================================
-
-def monitor_source_recovery():
-    """Periodically check if failed sources have recovered"""
-    log.info("Source recovery monitor started")
-    while True:
-        try:
-            time.sleep(SOURCE_RETRY_INTERVAL)
-
-            fallback_streams = []
-            with lock:
-                for key, stream in list(streams.items()):
-                    if stream.get('on_fallback') and stream.get('clients', 0) > 0:
-                        # Check if enough time has passed since last retry
-                        if time.time() - stream.get('last_retry', 0) >= SOURCE_RETRY_INTERVAL:
-                            fallback_streams.append((key, stream['urls'][:]))  # Copy URLs
-
-            # Check sources outside of lock to avoid blocking
-            for key, urls in fallback_streams:
-                log.info(f"Checking source recovery for {key}")
-
-                # Try each non-fallback URL
-                for idx, url in enumerate(urls):
-                    if url == FALLBACK_URL:
-                        continue
-
-                    if check_source_health(url):
-                        log.info(f"Source recovered for {key} at URL index {idx}")
-                        restart_stream_with_source(key, idx)
-                        break  # Stop checking once we find a working source
-                else:
-                    # No sources recovered, update last_retry time
-                    with lock:
-                        if key in streams:
-                            streams[key]['last_retry'] = time.time()
-                            log.info(f"No sources available yet for {key}, will retry later")
-
-        except Exception as e:
-            log.error(f"Source recovery error: {e}")
-
-# ============================================================================
-# TVHeadend MONITOR
-# ============================================================================
-
-def monitor_tvh():
-    """Monitor TVHeadend subscriptions"""
-    log.info("TVHeadend monitor started")
-    while True:
-        try:
-            tvh = config.get('tvheadend', {})
-            if not tvh.get('url'):
-                time.sleep(TVH_CHECK_INTERVAL)
-                continue
-
-            r = requests.get(f"{tvh['url']}/api/status/subscriptions",
-                           auth=HTTPDigestAuth(tvh.get('username', ''), tvh.get('password', '')), timeout=5)
-            r.raise_for_status()
-            
-            active = set()
-            for sub in r.json().get('entries', []):
-                url = sub.get('server_url', '')
-                if url:
-                    parts = url.strip('/').split('/')
-                    if len(parts) > 1:
-                        active.add(f"{parts[0]}:{parts[1].rsplit('.', 1)[0]}")
-            
-            with lock:
-                for key in list(streams.keys()):
-                    if key not in active:
-                        s = streams[key]
-                        if s['clients'] == 0 and (time.time() - s['created']) >= TVH_GRACE_PERIOD:
-                            log.info(f"TVH: cleanup {key}")
-                            cleanup_stream(key)
-        except:
-            pass
-        
-        with lock:
-            expired = [k for k, v in cooldowns.items() if time.time() > v]
-            for k in expired:
-                del cooldowns[k]
-        
-        time.sleep(TVH_CHECK_INTERVAL)
-
-# ============================================================================
-# REST API
+# FLASK API
 # ============================================================================
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
+@app.before_request
+def restrict_ips():
+    if not security.is_allowed(request.remote_addr):
+        return jsonify({'error': 'Forbidden'}), 403
+
 @app.route('/api/status')
 def api_status():
-    with lock:
+    with stream_mgr.lock:
         s = []
-        total = 0
-        fallback_count = 0
-        for key, stream in streams.items():
-            c = stream['clients']
-            total += c
-
-            on_fallback = stream.get('on_fallback', False)
-            if on_fallback:
-                fallback_count += 1
-
-            # Calculate next retry time for fallback streams
-            next_retry = None
-            if on_fallback and stream.get('last_retry', 0) > 0:
-                next_retry = int(stream['last_retry'] + SOURCE_RETRY_INTERVAL - time.time())
-                if next_retry < 0:
-                    next_retry = 0
-
+        for key, stream in stream_mgr.streams.items():
             s.append({
                 'key': key,
-                'clients': c,
-                'queue_size': stream['buffer'].qsize() if stream.get('buffer') else 0,
-                'age': int(time.time() - stream['created']),
-                'url': stream['urls'][stream.get('current_url_idx', 0)] if stream.get('urls') else 'N/A',
-                'on_fallback': on_fallback,
-                'next_retry': next_retry
+                'clients': stream.clients,
+                'age': int(time.time() - stream.created),
+                'url': stream.urls[0] if stream.urls else 'N/A'
             })
-        c = [{'key': k, 'remaining': int(v - time.time())} for k, v in cooldowns.items() if v > time.time()]
 
     return jsonify({
         'streams': s,
         'total_streams': len(s),
-        'total_clients': total,
-        'fallback_streams': fallback_count,
-        'fallback_mode': config['fallback_mode'],
-        'auto_fallback': config.get('auto_fallback', True),
-        'retry_interval': SOURCE_RETRY_INTERVAL,
-        'uptime': int(time.time() - start_time),
-        'cooldowns': c
+        'total_clients': sum(st.clients for st in stream_mgr.streams.values()),
+        'uptime': int(time.time() - stream_mgr.start_time)
     })
 
-@app.route('/api/config')
-def api_get_config():
-    return jsonify(config)
+@app.route('/api/config', methods=['GET', 'POST'])
+def api_config():
+    if request.method == 'POST':
+        config.update(request.get_json() or {})
+        return jsonify({'success': True})
+    return jsonify(config.data)
 
-@app.route('/api/config', methods=['POST'])
-def api_update_config():
-    global config
-    data = request.get_json()
-    if data:
-        config.update(data)
-        detect_xtream()
-        save_config()
-    return jsonify({'success': True})
-
-@app.route('/api/sources')
-def api_get_sources():
-    return jsonify({'sources': config['sources']})
-
-@app.route('/api/sources', methods=['POST'])
-def api_update_sources():
-    data = request.get_json()
-    if data and 'sources' in data:
-        config['sources'] = data['sources']
-        detect_xtream()
-        save_config()
-    return jsonify({'success': True})
+@app.route('/api/sources', methods=['GET', 'POST'])
+def api_sources():
+    if request.method == 'POST':
+        data = request.get_json()
+        if data and 'sources' in data:
+            config.update({'sources': data['sources']})
+            return jsonify({'success': True})
+    return jsonify({'sources': config.data.get('sources', {})})
 
 @app.route('/api/sources/<source_id>', methods=['DELETE'])
 def api_delete_source(source_id):
-    if source_id in config['sources']:
-        del config['sources'][source_id]
-        save_config()
+    if source_id in config.data['sources']:
+        del config.data['sources'][source_id]
+        config.save()
     return jsonify({'success': True})
 
 @app.route('/api/streams/<path:key>', methods=['DELETE'])
 def api_kill_stream(key):
-    cleanup_stream(key)
+    stream_mgr.cleanup_stream(key)
     return jsonify({'success': True})
 
 @app.route('/api/fallback', methods=['POST'])
 def api_toggle_fallback():
-    config['fallback_mode'] = not config['fallback_mode']
-    save_config()
-    log.warning(f"Fallback mode: {config['fallback_mode']}")
-    return jsonify({'fallback_mode': config['fallback_mode']})
+    config.data['fallback_mode'] = not config.data.get('fallback_mode', False)
+    config.save()
+    return jsonify({'fallback_mode': config.data['fallback_mode']})
 
 @app.route('/api/auto-fallback', methods=['POST'])
 def api_toggle_auto_fallback():
-    config['auto_fallback'] = not config.get('auto_fallback', True)
-    save_config()
-    log.info(f"Auto-fallback: {config['auto_fallback']}")
-    return jsonify({'auto_fallback': config['auto_fallback']})
+    config.data['auto_fallback'] = not config.data.get('auto_fallback', True)
+    config.save()
+    return jsonify({'auto_fallback': config.data['auto_fallback']})
 
 @app.route('/api/xtream/providers')
 def api_xtream_providers():
-    return jsonify({'providers': config.get('xtream_providers', {})})
+    return jsonify({'providers': config.data.get('xtream_providers', {})})
 
 @app.route('/api/xtream/providers/<provider_id>/info')
 def api_xtream_info(provider_id):
-    providers = config.get('xtream_providers', {})
-    if provider_id not in providers:
-        return jsonify({'error': 'Not found'}), 404
-    info = xtream_api(providers[provider_id])
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
+    info = XtreamAPI.call(providers[provider_id])
     return jsonify({'info': info} if info else {'error': 'Failed'})
 
 @app.route('/api/xtream/providers/<provider_id>/categories')
 def api_xtream_categories(provider_id):
-    providers = config.get('xtream_providers', {})
-    if provider_id not in providers:
-        return jsonify({'error': 'Not found'}), 404
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
     cat_type = request.args.get('type', 'live')
-    cats = get_categories(providers[provider_id], cat_type)
-    return jsonify({'categories': cats})
+    return jsonify({'categories': XtreamAPI.get_categories(providers[provider_id], cat_type)})
 
 @app.route('/api/xtream/providers/<provider_id>/streams')
 def api_xtream_streams(provider_id):
-    providers = config.get('xtream_providers', {})
-    if provider_id not in providers:
-        return jsonify({'error': 'Not found'}), 404
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
     cat_id = request.args.get('category_id')
     stream_type = request.args.get('type', 'live')
-    streams_data = get_streams(providers[provider_id], cat_id, stream_type)
-    return jsonify({'streams': streams_data})
+    return jsonify({'streams': XtreamAPI.get_streams(providers[provider_id], cat_id, stream_type)})
 
 @app.route('/api/xtream/providers/<provider_id>/epg/<stream_id>')
 def api_xtream_epg(provider_id, stream_id):
-    providers = config.get('xtream_providers', {})
-    if provider_id not in providers:
-        return jsonify({'error': 'Not found'}), 404
-    epg = get_epg(providers[provider_id], stream_id)
-    return jsonify({'epg': epg})
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
+    epg_type = request.args.get('type', 'short')
+    if epg_type == 'full':
+        return jsonify({'epg': XtreamAPI.get_full_epg(providers[provider_id], stream_id)})
+    return jsonify({'epg': XtreamAPI.get_epg(providers[provider_id], stream_id)})
 
-@app.route('/api/xtream/test', methods=['POST'])
-def api_xtream_test():
-    data = request.get_json()
-    provider = {'url': data.get('url'), 'username': data.get('username'), 'password': data.get('password')}
-    result = xtream_api(provider)
-    return jsonify({'success': True, 'data': result} if result else {'error': 'Failed'})
+@app.route('/api/xtream/providers/<provider_id>/vod/<vod_id>/info')
+def api_xtream_vod_info(provider_id, vod_id):
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
+    return jsonify({'info': XtreamAPI.get_vod_info(providers[provider_id], vod_id)})
+
+@app.route('/api/xtream/providers/<provider_id>/series/<series_id>/info')
+def api_xtream_series_info(provider_id, series_id):
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
+    return jsonify({'info': XtreamAPI.get_series_info(providers[provider_id], series_id)})
+
+@app.route('/api/xtream/providers/<provider_id>/xmltv.php')
+def api_xtream_xmltv(provider_id):
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
+    provider = providers[provider_id]
+
+    xmltv_url = f"{provider['url']}/xmltv.php?username={provider['username']}&password={provider['password']}"
+    proxy_url = config.get_random_proxy()
+    req_proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+    try:
+        r = requests.get(xmltv_url, stream=True, proxies=req_proxies, verify=False)
+        return Response(r.iter_content(chunk_size=8192), content_type=r.headers.get('Content-Type', 'text/xml'))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/xtream/providers/<provider_id>/category/<category_id>/playlist.m3u')
 def api_xtream_playlist(provider_id, category_id):
-    providers = config.get('xtream_providers', {})
-    if provider_id not in providers:
-        return jsonify({'error': 'Provider not found'}), 404
-    
+    providers = config.data.get('xtream_providers', {})
+    if provider_id not in providers: return jsonify({'error': 'Not found'}), 404
+
     provider = providers[provider_id]
     source_id = provider.get('source_id')
-    if not source_id:
-            return jsonify({'error': 'Provider has no source_id configured'}), 500
+    if not source_id: return jsonify({'error': 'Missing source_id'}), 500
 
-    # Get all streams for this category
-    streams_data = get_streams(provider, category_id, 'live')
-    if not streams_data:
-        return jsonify({'error': 'No streams found in this category'}), 404
+    url = f"{provider['url']}/player_api.php"
+    p = {'username': provider['username'], 'password': provider['password'], 'action': 'get_live_streams', 'category_id': category_id}
+    try:
+        r = requests.get(url, params=p, timeout=10, verify=False)
+        streams_data = r.json() if r.status_code == 200 else []
+    except:
+        streams_data = []
 
-    # Get the host (e.g., 192.168.1.135) from the request
-    # This avoids hardcoding the IP and uses whatever host the client is using
+    if not streams_data: return jsonify({'error': 'No streams found'}), 404
+
     proxy_host = request.host.split(':')[0]
-    
     m3u_lines = ["#EXTM3U"]
-    
+
     for stream in streams_data:
         stream_id = stream.get('stream_id') or stream.get('id')
         stream_name = stream.get('name', f'Stream {stream_id}')
-        epg_id = stream.get('epg_channel_id', '') # The EPG ID you wanted
+        epg_id = stream.get('epg_channel_id', '')
 
-        # Build the #EXTINF line with EPG tags
-        extinf = f'#EXTINF:-1 tvg-id="{epg_id}" tvg-name="{stream_name}",{stream_name}'
-        m3u_lines.append(extinf)
-        
-        # Build the dynamic proxy URL
-        proxy_url = f"http://{proxy_host}:{PROXY_PORT}/{source_id}/{stream_id}.ts"
-        m3u_lines.append(proxy_url)
+        m3u_lines.append(f'#EXTINF:-1 tvg-id="{epg_id}" tvg-name="{stream_name}",{stream_name}')
+        m3u_lines.append(f"http://{proxy_host}:{PROXY_PORT}/{source_id}/{stream_id}.ts")
 
-    # Join all lines with a newline
-    m3u_content = "\n".join(m3u_lines)
-    
-    # Return as a downloadable M3U file
-    return Response(m3u_content, mimetype='audio/mpegurl', headers={
+    return Response("\n".join(m3u_lines), mimetype='audio/mpegurl', headers={
         "Content-Disposition": f"attachment; filename=\"playlist_{category_id}.m3u\""
     })
 
-
 @app.route('/')
 def serve_ui():
-    ui_file = os.path.join(SCRIPT_DIR, 'index.html')
-    if os.path.exists(ui_file):
-        return send_file(ui_file)
-    return jsonify({'status': 'running', 'version': '2.0'})
+    return jsonify({'status': 'Proxy V4.2 running', 'version': '4.2.0'})
 
 # ============================================================================
 # MAIN
@@ -849,32 +726,18 @@ def serve_ui():
 def run_proxy():
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.ThreadingTCPServer(("", PROXY_PORT), ProxyHandler) as server:
-        log.info(f"Proxy running on :{PROXY_PORT}")
+        log.info(f"Proxy V4.2 running on :{PROXY_PORT}")
         server.serve_forever()
-
-def run_api():
-    log.info(f"API running on :{API_PORT}")
-    app.run(host='0.0.0.0', port=API_PORT, debug=False, threaded=True)
 
 def main():
     print("=" * 60)
-    print("IPTV Stream Proxy Manager")
+    print("IPTV Stream Proxy Manager V4.2")
     print("=" * 60)
-    print(f"Directory: {SCRIPT_DIR}")
-
-    load_config()
-
     threading.Thread(target=monitor_tvh, daemon=True).start()
-    threading.Thread(target=monitor_source_recovery, daemon=True).start()
-    threading.Thread(target=run_api, daemon=True).start()
-
-    try:
-        run_proxy()
-    except KeyboardInterrupt:
-        log.info("Stopped")
-    except Exception as e:
-        log.error(f"Fatal: {e}")
-        sys.exit(1)
+    threading.Thread(target=app.run, kwargs={'host':'0.0.0.0', 'port':API_PORT, 'debug':False, 'threaded':True}, daemon=True).start()
+    try: run_proxy()
+    except KeyboardInterrupt: pass
+    except Exception as e: log.error(f"Fatal: {e}"); sys.exit(1)
 
 if __name__ == "__main__":
     main()

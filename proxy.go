@@ -189,27 +189,44 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	w.Header().Set("Content-Type", "video/MP2T")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		log.Printf("Webserver doesn't support hijacking for %s", key)
+		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
+		return
+	}
+	conn, bufrw, err := hj.Hijack()
+	if err != nil {
+		log.Printf("Hijack failed for %s: %v", key, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
 
-	flusher, canFlush := w.(http.Flusher)
+	headers := "HTTP/1.1 200 OK\r\n" +
+		"Content-Type: video/MP2T\r\n" +
+		"Cache-Control: no-cache, no-store, must-revalidate\r\n" +
+		"Pragma: no-cache\r\n" +
+		"Expires: 0\r\n" +
+		"X-Accel-Buffering: no\r\n" +
+		"Connection: close\r\n\r\n"
+	
+	_, err = bufrw.WriteString(headers)
+	if err != nil {
+		log.Printf("Failed to write headers to %s: %v", key, err)
+		return
+	}
+	bufrw.Flush()
 
 	emptyReads := 0
 	for {
 		select {
 		case chunk := <-clientChan:
 			emptyReads = 0
-			_, err := w.Write(chunk)
+			_, err := conn.Write(chunk)
 			if err != nil {
+				log.Printf("Client disconnected or write failed for %s: %v", key, err)
 				return
-			}
-			if canFlush {
-				flusher.Flush()
 			}
 		case <-time.After(10 * time.Second):
 			emptyReads++
@@ -217,8 +234,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 				log.Printf("Timeout waiting for data on client: %s", key)
 				return
 			}
-		case <-r.Context().Done():
-			return
 		}
 	}
 }

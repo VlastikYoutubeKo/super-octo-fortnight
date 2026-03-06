@@ -35,3 +35,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+.gemini/
+gha-creds-*.json

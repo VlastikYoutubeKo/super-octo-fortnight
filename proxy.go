@@ -209,7 +209,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		"Pragma: no-cache\r\n" +
 		"Expires: 0\r\n" +
 		"X-Accel-Buffering: no\r\n" +
-		"Connection: close\r\n\r\n"
+		"Connection: keep-alive\r\n\r\n"
 	
 	_, err = bufrw.WriteString(headers)
 	if err != nil {

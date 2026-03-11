@@ -2,20 +2,30 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"regexp"
-    "math/rand"
-    "time"
+	"strings"
+	"math/rand"
+	"time"
 )
 
 func parseXtream(u string) (server, port, user, password string, ok bool) {
-	re := regexp.MustCompile(`https?://([^:]+):(\d+)/(?:live|movie|series)/([^/]+)/([^/]+)/\{channel_id\}`)
+	re := regexp.MustCompile(`https?://([^:]+)(?::(\d+))?/(?:live|movie|series)/([^/]+)/([^/]+)/\{channel_id\}`)
 	matches := re.FindStringSubmatch(u)
 	if len(matches) == 5 {
-		return matches[1], matches[2], matches[3], matches[4], true
+		port := matches[2]
+		if port == "" {
+			if strings.HasPrefix(u, "https") {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		return matches[1], port, matches[3], matches[4], true
 	}
 	return "", "", "", "", false
 }
@@ -25,9 +35,6 @@ func detectXtream() {
 	defer configLock.Unlock()
 
 	providers := make(map[string]Provider)
-	for k, v := range Config.XtreamProviders {
-		providers[k] = v // Keep existing
-	}
 
 	for sourceID, urls := range Config.Sources {
 		for _, u := range urls {
@@ -167,4 +174,120 @@ func getEpg(provider Provider, streamID string) interface{} {
 		return res
 	}
 	return map[string]interface{}{}
+}
+
+func filterEpg(w http.ResponseWriter, provider Provider, categoryID string) {
+	// 1. Get channel IDs for this category
+	streams := getStreams(provider, categoryID, "live")
+	allowedIDs := make(map[string]bool)
+	for _, s := range streams {
+		if m, ok := s.(map[string]interface{}); ok {
+			if epgID, ok := m["epg_channel_id"].(string); ok && epgID != "" {
+				allowedIDs[epgID] = true
+			}
+		}
+	}
+
+	if len(allowedIDs) == 0 && categoryID != "" {
+		log.Printf("No EPG IDs found for category %s", categoryID)
+		http.Error(w, "No channels with EPG found in this category", 404)
+		return
+	}
+
+	// 2. Fetch full XMLTV
+	epgURL := provider.URL + "/xmltv.php"
+	req, _ := http.NewRequest("GET", epgURL, nil)
+	q := req.URL.Query()
+	q.Add("username", provider.Username)
+	q.Add("password", provider.Password)
+	req.URL.RawQuery = q.Encode()
+
+	proxies := getProxies()
+	maxRetries := 3
+	if len(proxies) == 0 {
+		maxRetries = 1
+	}
+
+	var resp *http.Response
+	var err error
+
+	for i := 0; i < maxRetries; i++ {
+		client := &http.Client{Timeout: 60 * time.Second}
+		if len(proxies) > 0 {
+			proxyUrl, parseErr := url.Parse(proxies[rand.Intn(len(proxies))])
+			if parseErr == nil {
+				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
+			}
+		}
+
+		resp, err = client.Do(req)
+		if err != nil {
+			log.Printf("EPG fetch error (attempt %d): %v", i+1, err)
+			continue
+		}
+		
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			log.Printf("EPG fetch returned status %d (attempt %d)", resp.StatusCode, i+1)
+			continue
+		}
+		break // Success
+	}
+
+	if resp == nil || resp.StatusCode != 200 {
+		http.Error(w, "Failed to fetch EPG from provider", 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 3. Filter and stream back
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(200)
+
+	// XMLTV is huge, so we use a simple scanner to filter line by line if possible,
+	// but <channel> and <programme> tags can span multiple lines.
+	// For now, let's use a more robust approach:
+	// We'll output the header, then filter the elements.
+	
+	fmt.Fprintf(w, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+	fmt.Fprintf(w, "<!DOCTYPE tv SYSTEM \"xmltv.dtd\">\n")
+	fmt.Fprintf(w, "<tv>\n")
+
+	decoder := xml.NewDecoder(resp.Body)
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			break
+		}
+
+		switch se := token.(type) {
+		case xml.StartElement:
+			if se.Name.Local == "channel" {
+				var ch struct {
+					ID string `xml:"id,attr"`
+					Inner []byte `xml:",innerxml"`
+				}
+				if err := decoder.DecodeElement(&ch, &se); err == nil {
+					if allowedIDs[ch.ID] || categoryID == "" {
+						fmt.Fprintf(w, "  <channel id=\"%s\">%s</channel>\n", ch.ID, string(ch.Inner))
+					}
+				}
+			} else if se.Name.Local == "programme" {
+				var pr struct {
+					Channel string `xml:"channel,attr"`
+					Inner []byte `xml:",innerxml"`
+					Start string `xml:"start,attr"`
+					Stop string `xml:"stop,attr"`
+				}
+				if err := decoder.DecodeElement(&pr, &se); err == nil {
+					if allowedIDs[pr.Channel] || categoryID == "" {
+						fmt.Fprintf(w, "  <programme start=\"%s\" stop=\"%s\" channel=\"%s\">%s</programme>\n", 
+							pr.Start, pr.Stop, pr.Channel, string(pr.Inner))
+					}
+				}
+			}
+		}
+	}
+
+	fmt.Fprintf(w, "</tv>\n")
 }

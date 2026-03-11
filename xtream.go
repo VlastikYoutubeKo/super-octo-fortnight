@@ -67,27 +67,44 @@ func xtreamAPI(provider Provider, action string, params map[string]string) inter
 	}
 	req.URL.RawQuery = q.Encode()
 
-	client := &http.Client{Timeout: 10 * time.Second}
-    proxies := getProxies()
-    if len(proxies) > 0 {
-        proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))])
-        if err == nil {
-            client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
-        }
-    }
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Xtream API error: %v", err)
-		return nil
+	proxies := getProxies()
+	maxRetries := 3
+	if len(proxies) == 0 {
+		maxRetries = 1
 	}
-	defer resp.Body.Close()
 
-	var result interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
+	for i := 0; i < maxRetries; i++ {
+		client := &http.Client{Timeout: 10 * time.Second}
+		if len(proxies) > 0 {
+			proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))])
+			if err == nil {
+				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
+			}
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("Xtream API error (attempt %d): %v", i+1, err)
+			continue
+		}
+		
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			log.Printf("Xtream API returned status %d (attempt %d)", resp.StatusCode, i+1)
+			continue
+		}
+
+		var result interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			log.Printf("Xtream API JSON decode error: %v", err)
+			continue
+		}
+		resp.Body.Close()
+		return result
 	}
-	return result
+
+	return nil
 }
 
 func getCategories(provider Provider, catType string) []map[string]interface{} {

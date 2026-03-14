@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-    "path/filepath"
     "os"
     "log"
 )
@@ -372,19 +371,21 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
 
+		// 1. Try local file (allows manual UI overrides)
 		uiFile := "index.html"
 		if _, err := os.Stat(uiFile); err == nil {
 			http.ServeFile(w, r, uiFile)
 			return
 		}
 		
-		// Fallback to checking parent dir just in case
-		uiFileAlt := filepath.Join(scriptDir, "..", "index.html")
-		if _, err := os.Stat(uiFileAlt); err == nil {
-			http.ServeFile(w, r, uiFileAlt)
+		// 2. Try embedded HTML (the new redesign)
+		if len(defaultHTML) > 0 {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(defaultHTML)
 			return
 		}
 
+		// 3. Fallback to basic JSON if everything else fails
 		sendJSON(w, map[string]string{"status": "running", "version": "3.0 (Go Production)"})
 	})
 }

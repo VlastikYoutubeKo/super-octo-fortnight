@@ -22,11 +22,10 @@ func getAllowedIPs() (map[string]bool, bool) {
 	domains := Config.AllowedDomains
 	configLock.RUnlock()
 
-	// If both lists are empty, whitelist is disabled -> allow all
+	// If both lists are empty or nil, whitelist is disabled -> allow all
 	if len(ips) == 0 && len(domains) == 0 {
 		return nil, false
 	}
-
 	dnsMutex.Lock()
 	defer dnsMutex.Unlock()
 
@@ -203,7 +202,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	headers := "HTTP/1.1 200 OK\r\n" +
+	headers := "HTTP/1.0 200 OK\r\n" +
 		"Content-Type: video/MP2T\r\n" +
 		"Cache-Control: no-cache, no-store, must-revalidate\r\n" +
 		"Pragma: no-cache\r\n" +
@@ -223,6 +222,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		select {
 		case chunk := <-clientChan:
 			emptyReads = 0
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			_, err := conn.Write(chunk)
 			if err != nil {
 				log.Printf("Client disconnected or write failed for %s: %v", key, err)
@@ -230,7 +230,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-time.After(10 * time.Second):
 			emptyReads++
-			if emptyReads > 6 {
+			if emptyReads > 18 { // 180 seconds timeout
 				log.Printf("Timeout waiting for data on client: %s", key)
 				return
 			}

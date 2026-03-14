@@ -1,21 +1,30 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
+
+//go:embed config.example.json
+var defaultConfig []byte
+
+//go:embed index.html
+var defaultHTML []byte
 
 const (
 	ProxyPort           = 9000
 	APIPort             = 9005
-	FfmpegBuffer        = 16384
+	FfmpegBuffer        = 16384 // 16KB for smoother network flow
 	BufferQueueSize     = 2000
 	DataTimeout         = 60 * time.Second
 	CleanupDelay        = 5 * time.Second
@@ -88,9 +97,25 @@ func getProxies() []string {
 }
 
 func loadConfig() {
+	// Create index.html from embedded example if it doesn't exist
+	if _, err := os.Stat("index.html"); os.IsNotExist(err) {
+		log.Printf("index.html not found, creating a new one from template")
+		if err := os.WriteFile("index.html", defaultHTML, 0644); err != nil {
+			log.Printf("Warning: Failed to create default index.html: %v", err)
+		}
+	}
+
 	configFilePath = filepath.Join("..", "config.json")
 	if _, err := os.Stat("config.json"); err == nil {
 		configFilePath = "config.json"
+	} else if os.IsNotExist(err) {
+		// Create config.json from embedded example
+		log.Printf("config.json not found, creating a new one from template")
+		if err := os.WriteFile("config.json", defaultConfig, 0644); err != nil {
+			log.Printf("Warning: Failed to create default config.json: %v", err)
+		} else {
+			configFilePath = "config.json"
+		}
 	}
 
 	data, err := os.ReadFile(configFilePath)
@@ -114,6 +139,12 @@ func loadConfig() {
         }
         if newConfig.XtreamProviders == nil {
             newConfig.XtreamProviders = make(map[string]Provider)
+        }
+        if newConfig.AllowedIPs == nil {
+            newConfig.AllowedIPs = make([]string, 0)
+        }
+        if newConfig.AllowedDomains == nil {
+            newConfig.AllowedDomains = make([]string, 0)
         }
         Config = newConfig
         configLock.Unlock()
@@ -165,8 +196,28 @@ func main() {
 		}
 	}()
 
-	log.Printf("Proxy running on :%d", ProxyPort)
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", ProxyPort), proxyMux); err != nil {
-		log.Fatalf("Proxy server failed: %v", err)
+	go func() {
+		log.Printf("Proxy running on :%d", ProxyPort)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", ProxyPort), proxyMux); err != nil {
+			log.Fatalf("Proxy server failed: %v", err)
+		}
+	}()
+
+	// QoL: Graceful Shutdown
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+	<-stopChan
+
+	log.Println("\nShutting down... cleaning up active ffmpeg streams...")
+	streamsLock.Lock()
+	for key, stream := range streams {
+		stream.Mu.Lock()
+		if stream.Proc != nil && stream.Proc.Process != nil {
+			log.Printf("Killing ffmpeg for stream: %s", key)
+			stream.Proc.Process.Kill()
+		}
+		stream.Mu.Unlock()
 	}
+	streamsLock.Unlock()
+	log.Println("Cleanup complete. Goodbye!")
 }

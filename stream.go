@@ -22,9 +22,11 @@ type Stream struct {
 	LastDataTime  time.Time
 	Created       time.Time
 	OnFallback    bool
-	CurrentUrlIdx int
-	Active        bool
-	LastRetry     time.Time
+	CurrentUrlIdx       int
+	Active              bool
+	LastRetry           time.Time
+	CurrentBytesRead    int64
+	CurrentProcessStart time.Time
 }
 
 func shuffle(urls []string) {
@@ -99,21 +101,21 @@ func startProducer(s *Stream) {
 				}
 
 				args = append(args,
+					"-hide_banner",
 					"-loglevel", "error",
-					"-user_agent", "VLC/3.0.20",
-					"-reconnect", "1", "-reconnect_streamed", "1",
-					"-reconnect_delay_max", "10",
-					"-analyzeduration", "7000000",
-					"-probesize", "15000000",
+					"-user_agent", "VLC/3.0.23 LibVLC/3.0.23",
+					"-reconnect", "1",
+					"-reconnect_streamed", "1",
+					"-reconnect_delay_max", "5",
+					"-reconnect_on_http_error", "4xx,5xx",
+					"-analyzeduration", "5000000",
+					"-probesize", "10000000",
 					"-fflags", "+genpts+igndts+discardcorrupt",
-					"-err_detect", "ignore_err",
 					"-i", srcUrl,
-					"-map", "0:v?", "-map", "0:a?", "-map", "0:s?",
+					"-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?",
 					"-c", "copy",
 					"-avoid_negative_ts", "make_zero",
-					"-start_at_zero",
-					"-async", "1",
-					"-vsync", "passthrough",
+					"-mpegts_flags", "initial_discontinuity+resend_headers",
 					"-f", "mpegts",
 					"-flush_packets", "1",
 					"pipe:1",
@@ -137,6 +139,8 @@ func startProducer(s *Stream) {
 				s.Mu.Lock()
 				s.Proc = cmd
 				s.LastDataTime = time.Now()
+				s.CurrentProcessStart = time.Now()
+				s.CurrentBytesRead = 0
 				s.Mu.Unlock()
 
 				runStart := time.Now()
@@ -153,8 +157,9 @@ func startProducer(s *Stream) {
 							
 							s.Mu.Lock()
 							s.LastDataTime = time.Now()
+							s.CurrentBytesRead += int64(n)
 							s.RecentChunks = append(s.RecentChunks, chunk)
-							if len(s.RecentChunks) > 300 {
+							if len(s.RecentChunks) > 150 {
 								s.RecentChunks = s.RecentChunks[1:]
 							}
 							
@@ -207,25 +212,25 @@ func startProducer(s *Stream) {
 				}
 
 				cmd.Wait()
-				
+
 				runDuration := time.Since(runStart)
 
 				s.Mu.RLock()
 				active = s.Active
 				clients = len(s.Clients)
+				timeSinceData := time.Since(s.LastDataTime)
 				s.Mu.RUnlock()
-				
+
 				if !active || clients <= 0 {
 					break // break retry loop
 				}
 
-				if runDuration > 15 * time.Second {
-					// It ran successfully for a bit, reset retries
+				if runDuration > 15 * time.Second && timeSinceData < DataTimeout {
+					// It ran successfully and did not hang, reset retries
 					retryCount = 0
 				} else {
 					retryCount++
 				}
-
 				if retryCount < maxRetries {
 					log.Printf("Source %d for %s ended prematurely (ran for %v), retrying same source...", idx+1, s.Key, runDuration)
 					time.Sleep(2 * time.Second)

@@ -13,6 +13,9 @@ import (
 
 func sendJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	json.NewEncoder(w).Encode(data)
 }
 
@@ -34,32 +37,41 @@ func setupAPIRoutes(mux *http.ServeMux) {
 			}
 			onFallback := s.OnFallback
 			age := time.Since(s.Created).Seconds()
-            lastRetry := s.LastRetry
-            bufferSize := len(s.RecentChunks)
+			lastRetry := s.LastRetry
+			bufferSize := len(s.RecentChunks)
+
+			bytesRead := s.CurrentBytesRead
+			processAge := time.Since(s.CurrentProcessStart).Seconds()
+
 			s.Mu.RUnlock()
-			
+
+			kbps := 0
+			if processAge > 0 {
+				kbps = int((float64(bytesRead) * 8.0 / 1000.0) / processAge)
+			}
+
 			totalClients += clients
 			if onFallback {
 				fallbackCount++
 			}
-			
-            var nextRetry interface{} = nil
-            if onFallback && !lastRetry.IsZero() {
-                nr := int(lastRetry.Add(SourceRetryInterval).Sub(time.Now()).Seconds())
-                if nr < 0 { nr = 0 }
-                nextRetry = nr
-            }
+
+			var nextRetry interface{} = nil
+			if onFallback && !lastRetry.IsZero() {
+			nr := int(lastRetry.Add(SourceRetryInterval).Sub(time.Now()).Seconds())
+			if nr < 0 { nr = 0 }
+			nextRetry = nr
+			}
 
 			streamList = append(streamList, map[string]interface{}{
 				"key":         key,
 				"clients":     clients,
-                "queue_size":  bufferSize,
+			"queue_size":  bufferSize,
 				"age":         int(age),
 				"url":         urlStr,
 				"on_fallback": onFallback,
-                "next_retry":  nextRetry,
-			})
-		}
+			"next_retry":  nextRetry,
+				"kbps":        kbps,
+			})		}
 
         if streamList == nil {
             streamList = make([]map[string]interface{}, 0)
@@ -263,6 +275,22 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		sendJSON(w, map[string]interface{}{"epg": epg})
 	})
 
+	mux.HandleFunc("GET /api/xtream/providers/{id}/epg.xml", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		categoryID := r.URL.Query().Get("category_id")
+		
+		configLock.RLock()
+		provider, exists := Config.XtreamProviders[id]
+		configLock.RUnlock()
+		
+		if !exists {
+			http.Error(w, "Provider not found", 404)
+			return
+		}
+
+		filterEpg(w, provider, categoryID)
+	})
+
 	mux.HandleFunc("POST /api/xtream/test", func(w http.ResponseWriter, r *http.Request) {
 		var data map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&data); err == nil {
@@ -339,11 +367,24 @@ func setupAPIRoutes(mux *http.ServeMux) {
 			http.NotFound(w, r)
 			return
 		}
-		uiFile := filepath.Join(scriptDir, "..", "index.html")
+		// QoL: Disable caching for index.html so updates are immediate
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+
+		uiFile := "index.html"
 		if _, err := os.Stat(uiFile); err == nil {
 			http.ServeFile(w, r, uiFile)
 			return
 		}
+		
+		// Fallback to checking parent dir just in case
+		uiFileAlt := filepath.Join(scriptDir, "..", "index.html")
+		if _, err := os.Stat(uiFileAlt); err == nil {
+			http.ServeFile(w, r, uiFileAlt)
+			return
+		}
+
 		sendJSON(w, map[string]string{"status": "running", "version": "3.0 (Go Production)"})
 	})
 }

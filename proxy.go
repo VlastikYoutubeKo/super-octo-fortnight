@@ -76,6 +76,18 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourceID := parts[0]
+	
+	// QoL: Handle .m3u8 requests by returning a redirect to .ts
+	if strings.HasSuffix(parts[1], ".m3u8") {
+		channelID := strings.TrimSuffix(parts[1], ".m3u8")
+		tsURL := fmt.Sprintf("http://%s/%s/%s.ts", r.Host, sourceID, channelID)
+		
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Write([]byte(fmt.Sprintf("#EXTM3U\n#EXTINF:-1, Stream\n%s\n", tsURL)))
+		return
+	}
+
 	channelID := strings.TrimSuffix(parts[1], ".ts")
 	key := fmt.Sprintf("%s:%s", sourceID, channelID)
 

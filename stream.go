@@ -106,6 +106,7 @@ func startProducer(s *Stream) {
 					"-user_agent", "VLC/3.0.23 LibVLC/3.0.23",
 					"-reconnect", "1",
 					"-reconnect_streamed", "1",
+					"-reconnect_at_eof", "1",
 					"-reconnect_delay_max", "5",
 					"-reconnect_on_http_error", "4xx,5xx",
 					"-analyzeduration", "1000000",

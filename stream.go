@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -111,12 +112,19 @@ func startProducer(s *Stream) {
 					"-analyzeduration", "5000000",
 					"-probesize", "10000000",
 					"-fflags", "+genpts+igndts+discardcorrupt",
+				)
+
+				if strings.Contains(srcUrl, ".m3u8") {
+					args = append(args, "-allowed_extensions", "ALL")
+				}
+
+				args = append(args,
 					"-i", srcUrl,
 					"-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?",
 					"-c", "copy",
 					"-avoid_negative_ts", "make_zero",
 					"-max_muxing_queue_size", "9999",
-					"-mpegts_flags", "initial_discontinuity+resend_headers",
+					"-mpegts_flags", "resend_headers",
 					"-pat_period", "0.1",
 					"-sdt_period", "0.5",
 					"-f", "mpegts",
@@ -125,14 +133,21 @@ func startProducer(s *Stream) {
 				)
 
 				cmd := exec.Command("ffmpeg", args...)
-				
+
 				stdout, err := cmd.StdoutPipe()
 				if err != nil {
 					log.Printf("Error creating stdout pipe for %s: %v", s.Key, err)
 					retryCount++
 					continue
 				}
-				
+
+				stderr, err := cmd.StderrPipe()
+				if err != nil {
+					log.Printf("Error creating stderr pipe for %s: %v", s.Key, err)
+					retryCount++
+					continue
+				}
+
 				if err := cmd.Start(); err != nil {
 					log.Printf("Error starting ffmpeg for %s: %v", s.Key, err)
 					retryCount++
@@ -146,6 +161,18 @@ func startProducer(s *Stream) {
 				s.CurrentBytesRead = 0
 				s.Mu.Unlock()
 
+				go func() {
+					buf := make([]byte, 1024)
+					for {
+						n, err := stderr.Read(buf)
+						if n > 0 {
+							log.Printf("FFmpeg [%s]: %s", s.Key, string(buf[:n]))
+						}
+						if err != nil {
+							break
+						}
+					}
+				}()
 				runStart := time.Now()
 
 				buf := make([]byte, FfmpegBuffer)

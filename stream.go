@@ -183,7 +183,7 @@ func startProducer(s *Stream) {
 				
 				go func() {
 					for {
-						n, err := io.ReadFull(stdout, buf)
+						n, err := stdout.Read(buf)
 						if n > 0 {
 							chunk := make([]byte, n)
 							copy(chunk, buf[:n])
@@ -192,7 +192,7 @@ func startProducer(s *Stream) {
 							s.LastDataTime = time.Now()
 							s.CurrentBytesRead += int64(n)
 							s.RecentChunks = append(s.RecentChunks, chunk)
-							if len(s.RecentChunks) > 150 {
+							if len(s.RecentChunks) > 4000 {
 								s.RecentChunks = s.RecentChunks[1:]
 							}
 							

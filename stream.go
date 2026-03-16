@@ -125,7 +125,6 @@ func startProducer(s *Stream) {
 					"-c:v", "libx264",
 					"-preset", "ultrafast",
 					"-tune", "zerolatency",
-					"-threads", "1",
 					"-b:v", "2500k",
 					"-maxrate", "2500k",
 					"-bufsize", "5000k",

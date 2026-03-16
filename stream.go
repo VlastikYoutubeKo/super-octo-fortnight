@@ -181,11 +181,11 @@ func startProducer(s *Stream) {
 				
 				go func() {
 					for {
-						n, err := stdout.Read(buf)
+						n, err := io.ReadFull(stdout, buf)
 						if n > 0 {
 							chunk := make([]byte, n)
 							copy(chunk, buf[:n])
-							
+
 							s.Mu.Lock()
 							s.LastDataTime = time.Now()
 							s.CurrentBytesRead += int64(n)
@@ -206,7 +206,7 @@ func startProducer(s *Stream) {
 						}
 						
 						if err != nil {
-							if err != io.EOF && err != os.ErrClosed {
+							if err != io.EOF && err != io.ErrUnexpectedEOF && err != os.ErrClosed {
 								log.Printf("FFmpeg read error %s: %v", s.Key, err)
 							}
 							break

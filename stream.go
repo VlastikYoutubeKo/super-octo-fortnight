@@ -129,7 +129,6 @@ func startProducer(s *Stream) {
 					"-maxrate", "2500k",
 					"-bufsize", "5000k",
 					"-g", "50",
-					"-r", "25",
 					"-vsync", "1",
 					"-c:a", "aac",
 					"-b:a", "128k",

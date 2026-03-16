@@ -112,6 +112,8 @@ func startProducer(s *Stream) {
 					"-analyzeduration", "5000000",
 					"-probesize", "10000000",
 					"-fflags", "+genpts+igndts+discardcorrupt",
+					"-err_detect", "ignore_err",
+					"-ignore_unknown",
 				)
 
 				if strings.Contains(srcUrl, ".m3u8") {

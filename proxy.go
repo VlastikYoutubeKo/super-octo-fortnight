@@ -149,7 +149,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			LastDataTime: time.Now(),
 		}
 		streams[key] = s
-		go startProducer(s)
 	}
 	streamsLock.Unlock()
 
@@ -165,6 +164,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	s.Clients[clientChan] = true
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()
+
+	if !exists {
+		go startProducer(s)
+	}
 
 	log.Printf("Client connected: %s (total: %d)", key, clientsCount)
 

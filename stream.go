@@ -127,6 +127,8 @@ func startProducer(s *Stream) {
 					"-mpegts_flags", "resend_headers",
 					"-pat_period", "0.1",
 					"-sdt_period", "0.5",
+					"-muxdelay", "0",
+					"-muxpreload", "0",
 					"-f", "mpegts",
 					"-flush_packets", "1",
 					"pipe:1",

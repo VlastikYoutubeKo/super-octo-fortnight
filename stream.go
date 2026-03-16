@@ -124,7 +124,6 @@ func startProducer(s *Stream) {
 					"-i", srcUrl,
 					"-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?",
 					"-c", "copy",
-					"-avoid_negative_ts", "make_zero",
 					"-max_muxing_queue_size", "9999",
 					"-mpegts_flags", "resend_headers",
 					"-pat_period", "0.1",
@@ -161,6 +160,7 @@ func startProducer(s *Stream) {
 				s.LastDataTime = time.Now()
 				s.CurrentProcessStart = time.Now()
 				s.CurrentBytesRead = 0
+				s.RecentChunks = nil // Clear history to prevent jumping timestamps for new clients
 				s.Mu.Unlock()
 
 				go func() {

@@ -25,7 +25,7 @@ const (
 	ProxyPort           = 9000
 	APIPort             = 9005
 	FfmpegBuffer        = 16384 // 16KB for smoother network flow
-	BufferQueueSize     = 30000
+	BufferQueueSize     = 2000
 	DataTimeout         = 60 * time.Second
 	CleanupDelay        = 5 * time.Second
 	StartupTimeout      = 30 * time.Second

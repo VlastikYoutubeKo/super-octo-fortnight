@@ -1,8 +1,10 @@
 package main
 import (
+	"encoding/base64"
 	"io"
 	"log"
 	"math/rand"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -73,7 +75,6 @@ func startProducer(s *Stream) {
 				}())
 
 				args := []string{}
-				/* 
 				proxies := getProxies()
 				if len(proxies) > 0 && !isFallback {
 					proxyStr := proxies[rand.Intn(len(proxies))]
@@ -94,7 +95,6 @@ func startProducer(s *Stream) {
 						args = append(args, "-http_proxy", proxyStr)
 					}
 				}
-				*/
 
 				if isFallback {
 					args = append(args, "-stream_loop", "-1", "-re")
@@ -127,8 +127,6 @@ func startProducer(s *Stream) {
 					"-mpegts_flags", "resend_headers",
 					"-pat_period", "0.1",
 					"-sdt_period", "0.5",
-					"-muxdelay", "0",
-					"-muxpreload", "0",
 					"-f", "mpegts",
 					"-flush_packets", "1",
 					"pipe:1",
@@ -183,7 +181,7 @@ func startProducer(s *Stream) {
 
 				go func() {
 					for {
-						n, err := io.ReadFull(stdout, buf)
+						n, err := stdout.Read(buf)
 						if n > 0 {
 							chunk := make([]byte, n)
 							copy(chunk, buf[:n])

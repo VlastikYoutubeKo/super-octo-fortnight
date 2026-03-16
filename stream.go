@@ -1,11 +1,8 @@
 package main
-
 import (
-	"encoding/base64"
 	"io"
 	"log"
 	"math/rand"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -76,6 +73,7 @@ func startProducer(s *Stream) {
 				}())
 
 				args := []string{}
+				/* 
 				proxies := getProxies()
 				if len(proxies) > 0 && !isFallback {
 					proxyStr := proxies[rand.Intn(len(proxies))]
@@ -96,6 +94,7 @@ func startProducer(s *Stream) {
 						args = append(args, "-http_proxy", proxyStr)
 					}
 				}
+				*/
 
 				if isFallback {
 					args = append(args, "-stream_loop", "-1", "-re")

@@ -47,12 +47,19 @@ func startProducer(s *Stream) {
 		s.Mu.RUnlock()
 
 		for idx, srcUrl := range urls {
+			isFallback := (srcUrl == FallbackURL)
 			s.Mu.Lock()
 			s.CurrentUrlIdx = idx
+			s.OnFallback = isFallback
 			s.Mu.Unlock()
 
 			// STABLE FFmpeg CONFIGURATION
-			args := []string{
+			args := []string{}
+			if isFallback {
+				args = append(args, "-stream_loop", "-1", "-re")
+			}
+			
+			args = append(args,
 				"-hide_banner", "-loglevel", "quiet",
 				"-user_agent", "VLC/3.0.23 LibVLC/3.0.23",
 				"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
@@ -64,7 +71,7 @@ func startProducer(s *Stream) {
 				"-mpegts_flags", "resend_headers+initial_discontinuity",
 				"-copyts", // Keep original timestamps for smoothness
 				"pipe:1",
-			}
+			)
 
 			cmd := exec.Command("ffmpeg", args...)
 			stdout, err := cmd.StdoutPipe()

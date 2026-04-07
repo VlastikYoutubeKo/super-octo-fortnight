@@ -74,12 +74,33 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	if !exists {
         configLock.RLock()
 		sourceUrls := Config.Sources[sourceID]
+        fallbackMode := Config.FallbackMode
+        autoFallback := Config.AutoFallback
         configLock.RUnlock()
+		
 		var urls []string
-		for _, u := range sourceUrls {
-			urls = append(urls, strings.Replace(u, "{channel_id}", channelID, -1))
-		}
-		shuffle(urls)
+        if fallbackMode {
+            urls = []string{FallbackURL}
+        } else {
+            for _, u := range sourceUrls {
+                urls = append(urls, strings.Replace(u, "{channel_id}", channelID, -1))
+            }
+            shuffle(urls)
+            
+            if autoFallback {
+                hasFallback := false
+                for _, u := range urls {
+                    if u == FallbackURL {
+                        hasFallback = true
+                        break
+                    }
+                }
+                if !hasFallback {
+                    urls = append(urls, FallbackURL)
+                }
+            }
+        }
+
 		s = &Stream{Key: key, Urls: urls, Clients: make(map[chan []byte]bool), Created: time.Now(), LastDataTime: time.Now()}
 		streams[key] = s
 	}

@@ -371,8 +371,8 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
 
-		// 1. Try local file (allows manual UI overrides)
-		uiFile := "index.html"
+		// 1. Try local file in src directory (allows manual UI overrides)
+		uiFile := "src/index.html"
 		if _, err := os.Stat(uiFile); err == nil {
 			http.ServeFile(w, r, uiFile)
 			return

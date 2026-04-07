@@ -21,50 +21,33 @@ func getAllowedIPs() (map[string]bool, bool) {
 	ips := Config.AllowedIPs
 	domains := Config.AllowedDomains
 	configLock.RUnlock()
-
-	// If both lists are empty or nil, whitelist is disabled -> allow all
-	if len(ips) == 0 && len(domains) == 0 {
-		return nil, false
-	}
+	if len(ips) == 0 && len(domains) == 0 { return nil, false }
 	dnsMutex.Lock()
 	defer dnsMutex.Unlock()
-
 	now := time.Now()
 	if now.Sub(lastDNSCheck) > 5*time.Minute {
 		newIPs := map[string]bool{"127.0.0.1": true, "::1": true}
-		for _, ip := range ips {
-			newIPs[ip] = true
-		}
+		for _, ip := range ips { newIPs[ip] = true }
 		for _, dom := range domains {
 			resolvedIPs, err := net.LookupIP(dom)
 			if err == nil {
-				for _, ip := range resolvedIPs {
-					newIPs[ip.String()] = true
-				}
-			} else {
-				log.Printf("Could not resolve whitelist domain %s: %v", dom, err)
+				for _, ip := range resolvedIPs { newIPs[ip.String()] = true }
 			}
 		}
 		allowedIPsCache = newIPs
 		lastDNSCheck = now
-		log.Printf("Updated allowed IPs whitelist: %d IPs", len(allowedIPsCache))
 	}
 	return allowedIPsCache, true
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
     clientIP := r.RemoteAddr
-    if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 {
-        clientIP = clientIP[:colonIdx]
-    }
-    
-    // Remove IPv6 brackets if present
+    if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 { clientIP = clientIP[:colonIdx] }
     clientIP = strings.Trim(clientIP, "[]")
 
 	allowedIPs, enforcementEnabled := getAllowedIPs()
 	if enforcementEnabled && !allowedIPs[clientIP] {
-		log.Printf("Blocked unauthorized access from IP: %s", clientIP)
-		http.Error(w, "Forbidden: IP not allowed", http.StatusForbidden)
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -76,179 +59,77 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourceID := parts[0]
-	
-	// QoL: Handle .m3u8 requests by returning a redirect to .ts
-	if strings.HasSuffix(parts[1], ".m3u8") {
-		channelID := strings.TrimSuffix(parts[1], ".m3u8")
-		tsURL := fmt.Sprintf("http://%s/%s/%s.ts", r.Host, sourceID, channelID)
-		
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Write([]byte(fmt.Sprintf("#EXTM3U\n#EXTINF:-1, Stream\n%s\n", tsURL)))
-		return
-	}
-
-	channelID := strings.TrimSuffix(parts[1], ".ts")
+	isM3U8Request := strings.HasSuffix(parts[1], ".m3u8")
+	channelID := strings.TrimSuffix(parts[1], ".m3u8")
+	channelID = strings.TrimSuffix(channelID, ".ts")
 	key := fmt.Sprintf("%s:%s", sourceID, channelID)
 
-    cooldownsLock.RLock()
-    cd, hasCd := cooldowns[key]
-    cooldownsLock.RUnlock()
-    if hasCd {
-        remaining := int(time.Until(cd).Seconds())
-        if remaining > 0 {
-            http.Error(w, fmt.Sprintf("Cooldown: %ds", remaining), http.StatusServiceUnavailable)
-            return
-        }
+    if isM3U8Request {
+        http.Redirect(w, r, "http://"+r.Host+"/"+sourceID+"/"+channelID+".ts", http.StatusFound)
+        return
     }
 
 	streamsLock.Lock()
 	s, exists := streams[key]
 	if !exists {
         configLock.RLock()
-		sourceUrls, sourceExists := Config.Sources[sourceID]
-        fallbackMode := Config.FallbackMode
-        autoFallback := Config.AutoFallback
+		sourceUrls := Config.Sources[sourceID]
         configLock.RUnlock()
-        
-		if !sourceExists && !fallbackMode {
-			streamsLock.Unlock()
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-
 		var urls []string
-		if fallbackMode {
-			urls = []string{FallbackURL}
-		} else {
-			for _, u := range sourceUrls {
-				formatted := strings.Replace(u, "{channel_id}", channelID, -1)
-				urls = append(urls, formatted)
-			}
-			shuffle(urls)
-			
-			if autoFallback {
-				hasFallback := false
-				for _, u := range urls {
-					if u == FallbackURL {
-						hasFallback = true
-						break
-					}
-				}
-				if !hasFallback {
-					urls = append(urls, FallbackURL)
-				}
-			}
+		for _, u := range sourceUrls {
+			urls = append(urls, strings.Replace(u, "{channel_id}", channelID, -1))
 		}
-
-		s = &Stream{
-			Key:          key,
-			Urls:         urls,
-			Clients:      make(map[chan []byte]bool),
-			Created:      time.Now(),
-			LastDataTime: time.Now(),
-		}
+		shuffle(urls)
+		s = &Stream{Key: key, Urls: urls, Clients: make(map[chan []byte]bool), Created: time.Now(), LastDataTime: time.Now()}
 		streams[key] = s
 	}
 	streamsLock.Unlock()
 
 	clientChan := make(chan []byte, BufferQueueSize)
-
 	s.Mu.Lock()
-	for _, chunk := range s.RecentChunks {
-		select {
-		case clientChan <- chunk:
-		default:
-		}
-	}
+    // History is now disabled for smooth timestamps
 	s.Clients[clientChan] = true
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()
 
-	if !exists {
-		go startProducer(s)
-	}
-
-	log.Printf("Client connected: %s (total: %d)", key, clientsCount)
+	if !exists { go startProducer(s) }
+	log.Printf("Connect: %s (Total: %d)", key, clientsCount)
 
 	defer func() {
 		s.Mu.Lock()
 		delete(s.Clients, clientChan)
 		clientsCount = len(s.Clients)
 		s.Mu.Unlock()
-
-		log.Printf("Client disconnected: %s (remaining: %d)", key, clientsCount)
-
-		if clientsCount == 0 {
-			time.AfterFunc(CleanupDelay, func() {
-				cleanupStream(key)
-			})
-		}
+		if clientsCount == 0 { time.AfterFunc(CleanupDelay, func() { cleanupStream(key) }) }
 	}()
 
 	waitStart := time.Now()
 	for {
 		s.Mu.RLock()
-		hasProc := s.Proc != nil
+		hasData := s.CurrentBytesRead > 0
 		s.Mu.RUnlock()
-		
-		if hasProc {
-			break
-		}
-		
-		if time.Since(waitStart) > StartupTimeout {
-			log.Printf("Timeout waiting for stream to start: %s", key)
+		if hasData { break }
+		if time.Since(waitStart) > 10 * time.Second {
+			http.Error(w, "Timeout", http.StatusGatewayTimeout)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		log.Printf("Webserver doesn't support hijacking for %s", key)
-		http.Error(w, "webserver doesn't support hijacking", http.StatusInternalServerError)
-		return
-	}
-	conn, bufrw, err := hj.Hijack()
-	if err != nil {
-		log.Printf("Hijack failed for %s: %v", key, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	hj, _ := w.(http.Hijacker)
+	conn, bufrw, _ := hj.Hijack()
 	defer conn.Close()
 
-	headers := "HTTP/1.0 200 OK\r\n" +
-		"Content-Type: video/MP2T\r\n" +
-		"Cache-Control: no-cache, no-store, must-revalidate\r\n" +
-		"Pragma: no-cache\r\n" +
-		"Expires: 0\r\n" +
-		"X-Accel-Buffering: no\r\n" +
-		"Connection: keep-alive\r\n\r\n"
-	
-	_, err = bufrw.WriteString(headers)
-	if err != nil {
-		log.Printf("Failed to write headers to %s: %v", key, err)
-		return
-	}
+	bufrw.WriteString("HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nConnection: keep-alive\r\n\r\n")
 	bufrw.Flush()
 
-	emptyReads := 0
 	for {
 		select {
 		case chunk := <-clientChan:
-			emptyReads = 0
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			_, err := conn.Write(chunk)
-			if err != nil {
-				log.Printf("Client disconnected or write failed for %s: %v", key, err)
-				return
-			}
-		case <-time.After(10 * time.Second):
-			emptyReads++
-			if emptyReads > 18 { // 180 seconds timeout
-				log.Printf("Timeout waiting for data on client: %s", key)
-				return
-			}
+			if _, err := conn.Write(chunk); err != nil { return }
+		case <-time.After(30 * time.Second):
+			return
 		}
 	}
 }

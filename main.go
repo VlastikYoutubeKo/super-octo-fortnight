@@ -24,10 +24,10 @@ var defaultHTML []byte
 const (
 	ProxyPort           = 9000
 	APIPort             = 9005
-	FfmpegBuffer        = 16384 // 16KB for smoother network flow
+	FfmpegBuffer        = 16384 // 16KB
 	BufferQueueSize     = 2000
-	DataTimeout         = 60 * time.Second
-	CleanupDelay        = 5 * time.Second
+	DataTimeout         = 15 * time.Second
+	CleanupDelay        = 10 * time.Second
 	StartupTimeout      = 30 * time.Second
 	SourceRetryInterval = 60 * time.Second
 	SourceCheckTimeout  = 15 * time.Second

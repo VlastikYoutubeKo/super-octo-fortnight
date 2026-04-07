@@ -1,11 +1,9 @@
 package main
+
 import (
-	"io"
 	"log"
 	"math/rand"
-	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 )
@@ -41,292 +39,110 @@ func startProducer(s *Stream) {
 	copy(urls, s.Urls)
 	s.Mu.Unlock()
 
-	log.Printf("Producer started: %s", s.Key)
+	log.Printf("Starting stable producer: %s", s.Key)
 
 	for {
 		s.Mu.RLock()
-		active := s.Active
-		clients := len(s.Clients)
+		if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
 		s.Mu.RUnlock()
 
-		if !active || clients <= 0 {
-			break
-		}
-
 		for idx, srcUrl := range urls {
-			isFallback := (srcUrl == FallbackURL)
+			s.Mu.Lock()
+			s.CurrentUrlIdx = idx
+			s.Mu.Unlock()
 
-			retryCount := 0
-			maxRetries := 3
-
-			for retryCount < maxRetries {
-				s.Mu.Lock()
-				s.CurrentUrlIdx = idx
-				s.OnFallback = isFallback
-				s.Mu.Unlock()
-
-				log.Printf("Starting %s [%d/%d] (Try %d/%d)%s", s.Key, idx+1, len(urls), retryCount+1, maxRetries, func() string {
-					if isFallback {
-						return " - Fallback"
-					}
-					return ""
-				}())
-
-				args := []string{}
-				/*
-				proxies := getProxies()
-				if len(proxies) > 0 && !isFallback {
-					proxyStr := proxies[rand.Intn(len(proxies))]
-					u, err := url.Parse(proxyStr)
-					if err == nil {
-						if u.User != nil {
-							pass, _ := u.User.Password()
-							auth := u.User.Username() + ":" + pass
-							encodedAuth := base64.StdEncoding.EncodeToString([]byte(auth))
-							// remove userinfo from url for -http_proxy
-							u.User = nil
-							args = append(args, "-http_proxy", u.String())
-							args = append(args, "-headers", "Proxy-Authorization: Basic "+encodedAuth+"\r\n")
-						} else {
-							args = append(args, "-http_proxy", proxyStr)
-						}
-					} else {
-						args = append(args, "-http_proxy", proxyStr)
-					}
-				}
-				*/
-
-				if isFallback {
-					args = append(args, "-stream_loop", "-1", "-re")
-				}
-
-				args = append(args,
-					"-hide_banner",
-					"-loglevel", "error",
-					"-user_agent", "VLC/3.0.23 LibVLC/3.0.23",
-					"-reconnect", "1",
-					"-reconnect_streamed", "1",
-					"-reconnect_at_eof", "1",
-					"-reconnect_delay_max", "5",
-					"-reconnect_on_http_error", "4xx,5xx",
-					"-analyzeduration", "1000000",
-					"-probesize", "1000000",
-					"-fflags", "+genpts+igndts+discardcorrupt+nobuffer",
-					"-err_detect", "ignore_err",
-					"-ignore_unknown",
-				)
-
-				if strings.Contains(srcUrl, ".m3u8") {
-					args = append(args, "-allowed_extensions", "ALL")
-				}
-
-				args = append(args,
-					"-i", srcUrl,
-					"-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?",
-					"-c:v", "libx264",
-					"-preset", "ultrafast",
-					"-tune", "zerolatency",
-					"-b:v", "2500k",
-					"-maxrate", "2500k",
-					"-bufsize", "5000k",
-					"-g", "50",
-					"-vsync", "1",
-					"-c:a", "aac",
-					"-b:a", "128k",
-					"-af", "aresample=async=1",
-					"-max_muxing_queue_size", "9999",
-					"-mpegts_flags", "resend_headers",
-					"-pat_period", "0.1",
-					"-sdt_period", "0.5",
-					"-f", "mpegts",
-					"-flush_packets", "1",
-					"pipe:1",
-				)
-
-				cmd := exec.Command("ffmpeg", args...)
-
-				stdout, err := cmd.StdoutPipe()
-				if err != nil {
-					log.Printf("Error creating stdout pipe for %s: %v", s.Key, err)
-					retryCount++
-					continue
-				}
-
-				stderr, err := cmd.StderrPipe()
-				if err != nil {
-					log.Printf("Error creating stderr pipe for %s: %v", s.Key, err)
-					retryCount++
-					continue
-				}
-
-				if err := cmd.Start(); err != nil {
-					log.Printf("Error starting ffmpeg for %s: %v", s.Key, err)
-					retryCount++
-					continue
-				}
-
-				s.Mu.Lock()
-				s.Proc = cmd
-				s.LastDataTime = time.Now()
-				s.CurrentProcessStart = time.Now()
-				s.CurrentBytesRead = 0
-				s.RecentChunks = nil // Clear history to prevent jumping timestamps for new clients
-				s.Mu.Unlock()
-
-				go func() {
-					buf := make([]byte, 1024)
-					for {
-						n, err := stderr.Read(buf)
-						if n > 0 {
-							log.Printf("FFmpeg [%s]: %s", s.Key, string(buf[:n]))
-						}
-						if err != nil {
-							break
-						}
-					}
-				}()
-				runStart := time.Now()
-
-				buf := make([]byte, FfmpegBuffer)
-				doneReading := make(chan bool)
-
-				go func() {
-					for {
-						n, err := stdout.Read(buf)
-						if n > 0 {
-							chunk := make([]byte, n)
-							copy(chunk, buf[:n])
-
-							s.Mu.Lock()
-							s.LastDataTime = time.Now()
-							s.CurrentBytesRead += int64(n)
-							s.RecentChunks = append(s.RecentChunks, chunk)
-							if len(s.RecentChunks) > 300 {
-								s.RecentChunks = s.RecentChunks[1:]
-							}
-							
-							for ch := range s.Clients {
-								select {
-								case ch <- chunk:
-								default:
-									select { case <-ch: default: }
-									select { case ch <- chunk: default: }
-								}
-							}
-							s.Mu.Unlock()
-						}
-						
-						if err != nil {
-							if err != io.EOF && err != io.ErrUnexpectedEOF && err != os.ErrClosed {
-								log.Printf("FFmpeg read error %s: %v", s.Key, err)
-							}
-							break
-						}
-					}
-					doneReading <- true
-				}()
-
-				monitorLoop := true
-				for monitorLoop {
-					select {
-					case <-doneReading:
-						monitorLoop = false
-					case <-time.After(1 * time.Second):
-						s.Mu.RLock()
-						active := s.Active
-						clients := len(s.Clients)
-						timeSinceData := time.Since(s.LastDataTime)
-						s.Mu.RUnlock()
-
-						if !active || clients <= 0 {
-							if cmd.Process != nil {
-								cmd.Process.Kill()
-							}
-							monitorLoop = false
-						} else if timeSinceData > DataTimeout {
-							log.Printf("FFmpeg stuck for %v on %s", timeSinceData, s.Key)
-							if cmd.Process != nil {
-								cmd.Process.Kill()
-							}
-							monitorLoop = false
-						}
-					}
-				}
-
-				cmd.Wait()
-
-				runDuration := time.Since(runStart)
-
-				s.Mu.RLock()
-				active = s.Active
-				clients = len(s.Clients)
-				timeSinceData := time.Since(s.LastDataTime)
-				s.Mu.RUnlock()
-
-				if !active || clients <= 0 {
-					break // break retry loop
-				}
-
-				if runDuration > 15 * time.Second && timeSinceData < DataTimeout {
-					// It ran successfully and did not hang, reset retries
-					retryCount = 0
-				} else {
-					retryCount++
-				}
-				if retryCount < maxRetries {
-					log.Printf("Source %d for %s ended prematurely (ran for %v), retrying same source...", idx+1, s.Key, runDuration)
-					time.Sleep(2 * time.Second)
-				} else {
-					log.Printf("Source %d for %s failed after %d retries, moving to next source...", idx+1, s.Key, maxRetries)
-				}
+			// STABLE FFmpeg CONFIGURATION
+			args := []string{
+				"-hide_banner", "-loglevel", "quiet",
+				"-user_agent", "VLC/3.0.23 LibVLC/3.0.23",
+				"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+				"-fflags", "+nobuffer+igndts+discardcorrupt",
+				"-probesize", "1000000", "-analyzeduration", "500000",
+				"-i", srcUrl,
+				"-c", "copy", "-map", "0?", "-ignore_unknown",
+				"-f", "mpegts", 
+				"-mpegts_flags", "resend_headers+initial_discontinuity",
+				"-copyts", // Keep original timestamps for smoothness
+				"pipe:1",
 			}
+
+			cmd := exec.Command("ffmpeg", args...)
+			stdout, err := cmd.StdoutPipe()
+			if err != nil { continue }
+
+			if err := cmd.Start(); err != nil {
+				log.Printf("FFmpeg failed to start: %v", err)
+				continue
+			}
+
+			s.Mu.Lock()
+			s.Proc = cmd
+			s.LastDataTime = time.Now()
+			s.CurrentBytesRead = 0
+			// DISABLED: RecentChunks = nil (no history = no timestamp jumps)
+			s.RecentChunks = nil 
+			s.Mu.Unlock()
+
+			buf := make([]byte, FfmpegBuffer)
+			for {
+				n, err := stdout.Read(buf)
+				if n > 0 {
+					chunk := make([]byte, n)
+					copy(chunk, buf[:n])
+					s.Mu.Lock()
+					s.LastDataTime = time.Now()
+					s.CurrentBytesRead += int64(n)
+					
+					// Not using RecentChunks for stability
+					
+					for ch := range s.Clients {
+						select {
+						case ch <- chunk:
+						default:
+						}
+					}
+					s.Mu.Unlock()
+				}
+				if err != nil { break }
+				
+				s.Mu.RLock()
+				if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
+				s.Mu.RUnlock()
+			}
+			
+			cmd.Process.Kill()
+			cmd.Wait()
 
 			s.Mu.RLock()
-			active = s.Active
-			clients = len(s.Clients)
+			if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
 			s.Mu.RUnlock()
-			
-			if !active || clients <= 0 {
-				break
-			}
+			time.Sleep(1 * time.Second)
 		}
 		
 		s.Mu.RLock()
-		active = s.Active
-		clients = len(s.Clients)
+		if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
 		s.Mu.RUnlock()
-		
-		if !active || clients <= 0 {
-			break
-		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(2 * time.Second)
 	}
 
 	s.Mu.Lock()
 	s.Proc = nil
 	s.Active = false
+	s.RecentChunks = nil
 	s.Mu.Unlock()
-	log.Printf("Producer ended: %s", s.Key)
 }
 
 func cleanupStream(key string) {
 	streamsLock.Lock()
-	s, exists := streams[key]
-	if exists {
+	defer streamsLock.Unlock()
+	if s, exists := streams[key]; exists {
 		s.Mu.Lock()
-		clients := len(s.Clients)
-		s.Mu.Unlock()
-
-		if clients == 0 {
-			s.Mu.Lock()
+		if len(s.Clients) == 0 {
 			s.Active = false
-			if s.Proc != nil && s.Proc.Process != nil {
-				s.Proc.Process.Kill()
-			}
-			s.Mu.Unlock()
+			if s.Proc != nil && s.Proc.Process != nil { s.Proc.Process.Kill() }
 			delete(streams, key)
-			log.Printf("Cleaned up: %s", key)
+			log.Printf("Stream ended: %s", key)
 		}
+		s.Mu.Unlock()
 	}
-	streamsLock.Unlock()
 }

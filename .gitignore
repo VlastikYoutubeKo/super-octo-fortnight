@@ -1,40 +1,33 @@
-# Configuration files with credentials
+# Binaries
+proxy_server
+proxy_server_test
+build/
+
+# Configs
 config.json
-sources.json
-xtream.json
+config.bak
+proxy.pid
+proxy.log
+
+# Go
+src/vendor/
+*.exe
+*.dll
+*.so
+*.dylib
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
-
-# Virtual environments
 venv/
-env/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Logs
-*.log
+.env
 
 # OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-
-# Temporary files
-*.tmp
-*.bak
-
-.gemini/
-gha-creds-*.json

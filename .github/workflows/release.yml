@@ -20,29 +20,17 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Build Linux AMD64
-        env:
-          GOOS: linux
-          GOARCH: amd64
-        run: go build -o proxy_server_linux_amd64 *.go
-
-      - name: Build Linux ARM64
-        env:
-          GOOS: linux
-          GOARCH: arm64
-        run: go build -o proxy_server_linux_arm64 *.go
-
-      - name: Build Windows AMD64
-        env:
-          GOOS: windows
-          GOARCH: amd64
-        run: go build -o proxy_server_windows_amd64.exe *.go
-
-      - name: Build Windows ARM64
-        env:
-          GOOS: windows
-          GOARCH: arm64
-        run: go build -o proxy_server_windows_arm64.exe *.go
+      - name: Build Binaries
+        run: |
+          cd src
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -o ../proxy_server_linux_amd64 *.go
+          # Linux ARM64
+          GOOS=linux GOARCH=arm64 go build -o ../proxy_server_linux_arm64 *.go
+          # Windows AMD64
+          GOOS=windows GOARCH=amd64 go build -o ../proxy_server_windows_amd64.exe *.go
+          # Windows ARM64
+          GOOS=windows GOARCH=arm64 go build -o ../proxy_server_windows_arm64.exe *.go
 
       - name: Release
         uses: softprops/action-gh-release@v1

@@ -1,0 +1,16 @@
+============================================================
+IPTV Stream Proxy Manager (Go Production)
+============================================================
+2026/03/16 21:10:29 main.go:151: Loaded config successfully. AutoFallback: true, Sources: 4
+2026/03/16 21:10:29 xtream.go:59: Detected 44 Xtream providers
+2026/03/16 21:10:29 main.go:170: Config saved to config.json
+2026/03/16 21:10:29 monitor.go:173: TVHeadend monitor started
+2026/03/16 21:10:29 main.go:193: API running on :9006
+2026/03/16 21:10:29 monitor.go:109: Source recovery monitor started
+2026/03/16 21:10:29 main.go:200: Proxy running on :9001
+2026/03/16 21:10:31 proxy.go:50: Updated allowed IPs whitelist: 4 IPs
+2026/03/16 21:10:31 proxy.go:169: Client connected: 1:21033 (total: 1)
+2026/03/16 21:10:31 stream.go:46: Producer started: 1:21033
+2026/03/16 21:10:31 stream.go:70: Starting 1:21033 [1/23] (Try 1/3)
+2026/03/16 21:10:34 stream.go:161: FFmpeg [1:21033]: [NULL @ 0x556d9757d6c0] non-existing SPS 0 referenced in buffering period
+2026/03/16 21:10:34 stream.go:161: FFmpeg [1:21033]: [h264 @ 0x556d97538040] non-existing SPS 0 referenced in buffering period

@@ -34,6 +34,10 @@ func shuffle(urls []string) {
 
 func startProducer(s *Stream) {
 	s.Mu.Lock()
+	if s.Active {
+		s.Mu.Unlock()
+		return
+	}
 	s.Active = true
 	urls := make([]string, len(s.Urls))
 	copy(urls, s.Urls)
@@ -43,23 +47,19 @@ func startProducer(s *Stream) {
 
 	for {
 		s.Mu.RLock()
-		if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
+		// Stream běží, dokud je Active (což vypíná cleanupStream s prodlevou)
+		if !s.Active {
+			s.Mu.RUnlock()
+			break
+		}
 		s.Mu.RUnlock()
 
 		for idx, srcUrl := range urls {
-			isFallback := (srcUrl == FallbackURL)
 			s.Mu.Lock()
 			s.CurrentUrlIdx = idx
-			s.OnFallback = isFallback
 			s.Mu.Unlock()
 
-			// STABLE FFmpeg CONFIGURATION
-			args := []string{}
-			if isFallback {
-				args = append(args, "-stream_loop", "-1", "-re")
-			}
-			
-			args = append(args,
+			args := []string{
 				"-hide_banner", "-loglevel", "quiet",
 				"-user_agent", "VLC/3.0.23 LibVLC/3.0.23",
 				"-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
@@ -69,9 +69,9 @@ func startProducer(s *Stream) {
 				"-c", "copy", "-map", "0?", "-ignore_unknown",
 				"-f", "mpegts", 
 				"-mpegts_flags", "resend_headers+initial_discontinuity",
-				"-copyts", // Keep original timestamps for smoothness
+				"-copyts", 
 				"pipe:1",
-			)
+			}
 
 			cmd := exec.Command("ffmpeg", args...)
 			stdout, err := cmd.StdoutPipe()
@@ -86,7 +86,6 @@ func startProducer(s *Stream) {
 			s.Proc = cmd
 			s.LastDataTime = time.Now()
 			s.CurrentBytesRead = 0
-			// DISABLED: RecentChunks = nil (no history = no timestamp jumps)
 			s.RecentChunks = nil 
 			s.Mu.Unlock()
 
@@ -99,9 +98,6 @@ func startProducer(s *Stream) {
 					s.Mu.Lock()
 					s.LastDataTime = time.Now()
 					s.CurrentBytesRead += int64(n)
-					
-					// Not using RecentChunks for stability
-					
 					for ch := range s.Clients {
 						select {
 						case ch <- chunk:
@@ -113,7 +109,10 @@ func startProducer(s *Stream) {
 				if err != nil { break }
 				
 				s.Mu.RLock()
-				if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
+				if !s.Active {
+					s.Mu.RUnlock()
+					break
+				}
 				s.Mu.RUnlock()
 			}
 			
@@ -121,13 +120,19 @@ func startProducer(s *Stream) {
 			cmd.Wait()
 
 			s.Mu.RLock()
-			if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
+			if !s.Active {
+				s.Mu.RUnlock()
+				break
+			}
 			s.Mu.RUnlock()
 			time.Sleep(1 * time.Second)
 		}
 		
 		s.Mu.RLock()
-		if !s.Active || len(s.Clients) == 0 { s.Mu.RUnlock(); break }
+		if !s.Active {
+			s.Mu.RUnlock()
+			break
+		}
 		s.Mu.RUnlock()
 		time.Sleep(2 * time.Second)
 	}
@@ -135,21 +140,33 @@ func startProducer(s *Stream) {
 	s.Mu.Lock()
 	s.Proc = nil
 	s.Active = false
-	s.RecentChunks = nil
 	s.Mu.Unlock()
 }
 
 func cleanupStream(key string) {
+	// DŮLEŽITÉ: Tady už nebudeme hned zabíjet. 
+	// Tahle funkce se volá z proxy.go s CleanupDelay (10s).
+	// My to zkusíme ještě víc "pojistit".
+	
 	streamsLock.Lock()
 	defer streamsLock.Unlock()
-	if s, exists := streams[key]; exists {
-		s.Mu.Lock()
-		if len(s.Clients) == 0 {
-			s.Active = false
-			if s.Proc != nil && s.Proc.Process != nil { s.Proc.Process.Kill() }
-			delete(streams, key)
-			log.Printf("Stream ended: %s", key)
-		}
-		s.Mu.Unlock()
+	
+	s, exists := streams[key]
+	if !exists { return }
+
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	// Pokud se mezitím někdo připojil, nic neděláme
+	if len(s.Clients) > 0 {
+		return
 	}
+
+	// Pokud už uplynul čas od posledních dat a nikdo tam není, vypneme to
+	s.Active = false
+	if s.Proc != nil && s.Proc.Process != nil {
+		s.Proc.Process.Kill()
+	}
+	delete(streams, key)
+	log.Printf("Stream ended and cleaned up: %s", key)
 }

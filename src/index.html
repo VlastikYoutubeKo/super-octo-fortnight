@@ -164,7 +164,13 @@ function Stream(s) {
       <div class="stream-title">${s.key}</div>
       <button class="danger" onclick="kill('${s.key}')" title="Kill Stream">${icons.trash} Kill</button>
     </div>
-    <div class="stream-info">Clients: <strong style="color:#fff">${s.clients}</strong> &bull; Age: ${fmt(s.age)} &bull; <strong>${s.kbps || 0} Kbps</strong>${s.error ? ' <span class="badge danger">Error</span>' : ''}</div>
+    <div class="stream-info">
+      Clients: <strong style="color:#fff">${s.clients}</strong> &bull; 
+      Age: ${fmt(s.age)} &bull; 
+      Avg: <strong>${s.kbps || 0} Kbps</strong> &bull; 
+      Now: <strong style="color:var(--accent)">${(s.mbps || 0).toFixed(2)} Mbps</strong>
+      ${s.error ? ' <span class="badge danger">Error</span>' : ''}
+    </div>
     <div class="stream-url">${s.url}</div>
     ${s.error ? `<div class="error" style="margin-top:10px">${s.error}</div>` : ''}
   </div>`;

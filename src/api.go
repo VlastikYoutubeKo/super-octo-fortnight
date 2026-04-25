@@ -42,6 +42,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
 			bytesRead := s.CurrentBytesRead
 			processAge := time.Since(s.CurrentProcessStart).Seconds()
 
+			mbps := s.CurrentBitrate
 			s.Mu.RUnlock()
 
 			kbps := 0
@@ -70,6 +71,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
 				"on_fallback": onFallback,
 			"next_retry":  nextRetry,
 				"kbps":        kbps,
+				"mbps":        mbps,
 			})		}
 
         if streamList == nil {

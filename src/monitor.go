@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
     "math/rand"
+    "encoding/json"
+    "fmt"
     "os"
 )
 
@@ -168,9 +170,68 @@ type tvhSubResponse struct {
 }
 
 func monitorTVH() {
-	// Disabled to prevent aggressive cleanup
-    log.Println("TVHeadend monitor disabled (stability mode)")
-    for {
-        time.Sleep(1 * time.Hour)
-    }
+	log.Println("TVHeadend monitor started")
+	for {
+		configLock.RLock()
+		tvhUrl := Config.TVHeadend.URL
+		tvhUser := Config.TVHeadend.Username
+		tvhPass := Config.TVHeadend.Password
+		configLock.RUnlock()
+
+		if tvhUrl == "" {
+			time.Sleep(TVHCheckInterval)
+			continue
+		}
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		req, err := http.NewRequest("GET", tvhUrl+"/api/status/subscriptions", nil)
+		if err == nil {
+			req.SetBasicAuth(tvhUser, tvhPass)
+			resp, err := client.Do(req)
+			if err == nil {
+				if resp.StatusCode == 200 {
+					var data tvhSubResponse
+					if json.NewDecoder(resp.Body).Decode(&data) == nil {
+						active := make(map[string]bool)
+						for _, sub := range data.Entries {
+							u := sub.ServerURL
+							parts := strings.Split(strings.Trim(u, "/"), "/")
+							if len(parts) > 1 {
+								channelID := strings.Split(parts[1], ".")[0]
+								active[fmt.Sprintf("%s:%s", parts[0], channelID)] = true
+							}
+						}
+
+						streamsLock.Lock()
+						for key, s := range streams {
+							if !active[key] {
+								s.Mu.RLock()
+								clients := len(s.Clients)
+								age := time.Since(s.Created)
+								s.Mu.RUnlock()
+
+								if clients == 0 && age >= TVHGracePeriod {
+									log.Printf("TVH: cleanup %s", key)
+									go cleanupStream(key)
+								}
+							}
+						}
+						streamsLock.Unlock()
+					}
+				}
+				resp.Body.Close()
+			}
+		}
+
+		cooldownsLock.Lock()
+		now := time.Now()
+		for k, v := range cooldowns {
+			if now.After(v) {
+				delete(cooldowns, k)
+			}
+		}
+		cooldownsLock.Unlock()
+
+		time.Sleep(TVHCheckInterval)
+	}
 }

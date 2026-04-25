@@ -96,6 +96,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
         configLock.RLock()
         fm := Config.FallbackMode
         af := Config.AutoFallback
+        rm := Config.RedirectMode
         configLock.RUnlock()
 		
 		sendJSON(w, map[string]interface{}{
@@ -105,6 +106,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
 			"fallback_streams": fallbackCount,
 			"fallback_mode":    fm,
             "auto_fallback":    af,
+            "redirect_mode":    rm,
             "retry_interval":   int(SourceRetryInterval.Seconds()),
 			"uptime":           int(time.Since(startTime).Seconds()),
             "cooldowns":        cdList,
@@ -124,6 +126,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
             if data.Sources != nil { Config.Sources = data.Sources }
             Config.FallbackMode = data.FallbackMode
             Config.AutoFallback = data.AutoFallback
+            Config.RedirectMode = data.RedirectMode
             if data.TVHeadend.URL != "" { Config.TVHeadend = data.TVHeadend }
             if data.Proxies != nil { Config.Proxies = data.Proxies }
             if data.Ppproxies != nil { Config.Ppproxies = data.Ppproxies }
@@ -194,6 +197,16 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		saveConfig()
 		log.Printf("Auto-fallback: %v", af)
 		sendJSON(w, map[string]bool{"auto_fallback": af})
+	})
+
+	mux.HandleFunc("POST /api/redirect", func(w http.ResponseWriter, r *http.Request) {
+        configLock.Lock()
+		Config.RedirectMode = !Config.RedirectMode
+        rm := Config.RedirectMode
+        configLock.Unlock()
+		saveConfig()
+		log.Printf("Redirect mode: %v", rm)
+		sendJSON(w, map[string]bool{"redirect_mode": rm})
 	})
 
 	mux.HandleFunc("GET /api/xtream/providers", func(w http.ResponseWriter, r *http.Request) {

@@ -24,9 +24,9 @@ var defaultHTML []byte
 const (
 	ProxyPort           = 9000
 	APIPort             = 9005
-	FfmpegBuffer        = 16384 // 16KB
-	BufferQueueSize     = 2000
-	DataTimeout         = 15 * time.Second
+	FfmpegBuffer        = 65536 // 64KB
+	BufferQueueSize     = 5000
+	DataTimeout         = 12 * time.Second
 	CleanupDelay        = 10 * time.Second
 	StartupTimeout      = 30 * time.Second
 	SourceRetryInterval = 60 * time.Second
@@ -55,6 +55,7 @@ type AppConfig struct {
 	XtreamProviders map[string]Provider `json:"xtream_providers"`
 	FallbackMode    bool                `json:"fallback_mode"`
 	AutoFallback    bool                `json:"auto_fallback"`
+	RedirectMode    bool                `json:"redirect_mode"`
 	TVHeadend       TVHConfig           `json:"tvheadend"`
 	Proxies         []string            `json:"proxies"`
 	Ppproxies       []string            `json:"ppproxies"`

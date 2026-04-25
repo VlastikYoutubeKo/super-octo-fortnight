@@ -154,7 +154,7 @@ function Stats() {
     <div class="stat"><div class="stat-label">Streams</div><div class="stat-value">${S.status.total_streams}</div></div>
     <div class="stat"><div class="stat-label">Clients</div><div class="stat-value">${S.status.total_clients}</div></div>
     <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value">${uptime(S.status.uptime)}</div></div>
-    <div class="stat"><div class="stat-label">Mode</div><div class="stat-value" style="color: ${S.status.fallback_mode ? 'var(--warning)' : 'var(--accent)'}">${S.status.fallback_mode ? 'Fallback' : 'Normal'}</div></div>
+    <div class="stat"><div class="stat-label">Redirect</div><div class="stat-value" style="color: ${S.status.redirect_mode ? 'var(--success)' : 'var(--text-muted)'}">${S.status.redirect_mode ? 'Active' : 'Off'}</div></div>
   </div>`;
 }
 
@@ -175,6 +175,7 @@ function Dashboard() {
   return `<div class="controls">
     <button onclick="load()">${icons.refresh} Refresh Status</button>
     <button class="${st.fallback_mode ? 'secondary' : 'danger'}" onclick="toggleFallback()">${st.fallback_mode ? 'Disable Fallback Mode' : 'Force Fallback Mode'}</button>
+    <button class="${st.redirect_mode ? 'success' : 'secondary'}" onclick="toggleRedirect()">${st.redirect_mode ? '302 Redirect: ON' : '302 Redirect: OFF'}</button>
   </div>
   <div id="dashboard-data">
     ${DashboardData()}
@@ -367,6 +368,7 @@ async function load(bg = false) {
 
 async function kill(k) { if(confirm('Terminate stream ' + k + '?')) { await del('/streams/' + encodeURIComponent(k)); load(); } }
 async function toggleFallback() { await post('/fallback', {}); load(); }
+async function toggleRedirect() { await post('/redirect', {}); load(); }
 
 function addSource() { S.modal = { mode: 'add', id: '', urls: [''] }; showModal(); }
 function editSource(id) { S.modal = { mode: 'edit', id, urls: [...S.config.sources[id]] }; showModal(); }

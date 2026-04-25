@@ -49,16 +49,22 @@ func startProducer(s *Stream) {
 
 	for {
 		s.Mu.RLock()
-		if !s.Active {
-			s.Mu.RUnlock()
-			break
-		}
+		active := s.Active
 		s.Mu.RUnlock()
+		if !active { break }
 
-		// Race mechanism: try sources one by one, but don't wait forever for each
 		winnerFound := make(chan bool, 1)
 		
+		var raceMu sync.Mutex
+		var raceCmds []*exec.Cmd
+
 		for idx, srcUrl := range urls {
+			// Check if we already have a winner
+			s.Mu.RLock()
+			hasProc := s.Proc != nil
+			s.Mu.RUnlock()
+			if hasProc { break }
+
 			go func(urlIdx int, url string) {
 				isFallback := (url == FallbackURL)
 				args := []string{"-hide_banner", "-loglevel", "error", "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -91,6 +97,10 @@ func startProducer(s *Stream) {
 					return
 				}
 
+				raceMu.Lock()
+				raceCmds = append(raceCmds, cmd)
+				raceMu.Unlock()
+
 				// Error logging
 				go func() {
 					scanner := bufio.NewScanner(stderr)
@@ -114,14 +124,25 @@ func startProducer(s *Stream) {
 					lowDataTicks := 0
 					
 					for {
+						time.Sleep(2 * time.Second)
 						s.Mu.RLock()
 						active := s.Active
 						proc := s.Proc
 						currentBytes := s.CurrentBytesRead
 						s.Mu.RUnlock()
 
-						if !active || (proc != nil && proc != cmd) { break }
+						if !active { return }
 						
+						// If we are not the winner, we should eventually die if someone else won
+						if proc != nil && proc != cmd {
+							// If we haven't read a single byte yet, or we're just a zombie
+							if firstChunk {
+								cmd.Process.Kill()
+								return
+							}
+							// Actually, the read loop will handle killing if s.Proc != cmd
+						}
+
 						// If we are the winner, we monitor bitrate
 						if proc == cmd {
 							now := time.Now()
@@ -138,14 +159,12 @@ func startProducer(s *Stream) {
 							if diffBytes < 30000 { lowDataTicks++ } else { lowDataTicks = 0 }
 							
 							if time.Since(s.LastDataTime) > DataTimeout || lowDataTicks > 6 {
-								log.Printf("DataTimeout [%s]: FFmpeg frozen/low bitrate, killing attempt.", s.Key)
-								stdout.Close()
+								log.Printf("DataTimeout [%s]: FFmpeg frozen/low bitrate, killing winner.", s.Key)
 								cmd.Process.Kill()
-								break
+								return
 							}
 							lastCheck = now
 						}
-						time.Sleep(2 * time.Second)
 					}
 				}()
 
@@ -156,7 +175,6 @@ func startProducer(s *Stream) {
 						// Check if we already have a better winner
 						if s.Proc != nil && s.Proc != cmd {
 							s.Mu.Unlock()
-							stdout.Close()
 							cmd.Process.Kill()
 							return
 						}
@@ -170,10 +188,23 @@ func startProducer(s *Stream) {
 							s.LastDataTime = time.Now()
 							s.CurrentBytesRead = 0
 							s.RecentChunks = nil
+							
+							// SIGNAL WINNER
 							select {
 							case winnerFound <- true:
 							default:
 							}
+							
+							// KILL ALL OTHERS
+							go func(winner *exec.Cmd) {
+								raceMu.Lock()
+								defer raceMu.Unlock()
+								for _, c := range raceCmds {
+									if c != winner && c.Process != nil {
+										c.Process.Kill()
+									}
+								}
+							}(cmd)
 						}
 
 						chunk := make([]byte, n)
@@ -196,15 +227,13 @@ func startProducer(s *Stream) {
 						s.Mu.Lock()
 						if s.Proc == cmd {
 							s.Proc = nil
-							log.Printf("Producer [%s] died: %v", s.Key, err)
+							log.Printf("Winner [%s] died: %v", s.Key, err)
 							select {
 							case winnerFound <- false:
 							default:
 							}
 						}
 						s.Mu.Unlock()
-						stdout.Close()
-						cmd.Process.Kill()
 						return
 					}
 					
@@ -212,7 +241,6 @@ func startProducer(s *Stream) {
 					active := s.Active
 					s.Mu.RUnlock()
 					if !active { 
-						stdout.Close()
 						cmd.Process.Kill()
 						return 
 					}
@@ -243,11 +271,9 @@ func startProducer(s *Stream) {
 		
 		nextIter:
 		s.Mu.RLock()
-		if !s.Active {
-			s.Mu.RUnlock()
-			break
-		}
+		active = s.Active
 		s.Mu.RUnlock()
+		if !active { break }
 		time.Sleep(1 * time.Second)
 	}
 

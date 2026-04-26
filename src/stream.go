@@ -66,21 +66,19 @@ func startProducer(s *Stream) {
 			if isFallback {
 				args = append(args, "-stream_loop", "-1", "-re")
 			} else {
-				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
+				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx")
 			}
-			args = append(args, "-err_detect", "ignore_err")
-			args = append(args, "-fflags", "+genpts+igndts+flush_packets+discardcorrupt")
-			args = append(args, "-avoid_negative_ts", "make_zero")
-			args = append(args, "-probesize", "5000000", "-analyzeduration", "5000000")
+
+			args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
+			args = append(args, "-fflags", "+genpts+igndts+discardcorrupt")
 			args = append(args, "-i", srcUrl)
 
-			if isFallback {
-				args = append(args, "-c", "copy", "-map", "0:v?", "-map", "0:a?")
-			} else {
-				args = append(args, "-c", "copy", "-map", "0?", "-ignore_unknown")
-			}
+			args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")
+			args = append(args, "-c", "copy")
+			args = append(args, "-bsf:v", "dump_extra=freq=all")
+			args = append(args, "-avoid_negative_ts", "make_zero")
 
-			args = append(args, "-f", "mpegts", "-mpegts_flags", "resend_headers+initial_discontinuity", "-copyts", "pipe:1")
+			args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "pipe:1")
 			cmd := exec.Command("ffmpeg", args...)
 			stdout, err := cmd.StdoutPipe()
 			if err != nil { continue }

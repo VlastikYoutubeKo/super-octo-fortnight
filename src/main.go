@@ -26,7 +26,7 @@ const (
 	APIPort             = 9005
 	FfmpegBuffer        = 65536 // 64KB
 	BufferQueueSize     = 5000
-	DataTimeout         = 12 * time.Second
+	DataTimeout         = 30 * time.Second
 	CleanupDelay        = 10 * time.Second
 	StartupTimeout      = 30 * time.Second
 	SourceRetryInterval = 60 * time.Second

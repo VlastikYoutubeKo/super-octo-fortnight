@@ -19,9 +19,9 @@ type Stream struct {
 	LastDataTime  time.Time
 	Created       time.Time
 	OnFallback    bool
-	CurrentUrlIdx       int
-	Active              bool
-	LastRetry           time.Time
+	CurrentUrlIdx int
+	Active        bool
+	LastRetry     time.Time
 	CurrentBytesRead    int64
 	CurrentProcessStart time.Time
 	CurrentBitrate      float64 // In Mbps
@@ -45,173 +45,149 @@ func startProducer(s *Stream) {
 	copy(urls, s.Urls)
 	s.Mu.Unlock()
 
-	log.Printf("Starting stable producer: %s", s.Key)
+	log.Printf("Starting stable producer (Sequential): %s", s.Key)
 
 	for {
 		s.Mu.RLock()
-		active := s.Active
+		if !s.Active {
+			s.Mu.RUnlock()
+			break
+		}
 		s.Mu.RUnlock()
-		if !active { break }
-
-		winnerFound := make(chan bool, 1)
-		
-		var raceMu sync.Mutex
-		var raceCmds []*exec.Cmd
 
 		for idx, srcUrl := range urls {
-			// Check if we already have a winner
-			s.Mu.RLock()
-			hasProc := s.Proc != nil
-			s.Mu.RUnlock()
-			if hasProc { break }
+			s.Mu.Lock()
+			s.CurrentUrlIdx = idx
+			s.Mu.Unlock()
 
-			go func(urlIdx int, url string) {
-				isFallback := (url == FallbackURL)
-				args := []string{"-hide_banner", "-loglevel", "error", "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+			isFallback := (srcUrl == FallbackURL)
+			args := []string{"-hide_banner", "-loglevel", "warning", "-user_agent", "VLC/3.0.18 LibVLC/3.0.18"}
 
-				if isFallback {
-					args = append(args, "-stream_loop", "-1", "-re")
-				} else {
-					args = append(args, "-reconnect", "1", "-reconnect_at_eof", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-rw_timeout", "10000000")
-				}
+			if isFallback {
+				args = append(args, "-stream_loop", "-1", "-re")
+			} else {
+				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
+			}
+			args = append(args, "-err_detect", "ignore_err")
+			args = append(args, "-fflags", "+genpts+igndts+flush_packets+discardcorrupt")
+			args = append(args, "-avoid_negative_ts", "make_zero")
+			args = append(args, "-probesize", "5000000", "-analyzeduration", "5000000")
+			args = append(args, "-i", srcUrl)
 
-				args = append(args, "-err_detect", "ignore_err")
-				args = append(args, "-fflags", "+genpts+igndts+flush_packets")
-				args = append(args, "-avoid_negative_ts", "make_zero")
-				args = append(args, "-probesize", "1000000", "-analyzeduration", "1000000")
-				args = append(args, "-i", url)
+			if isFallback {
+				args = append(args, "-c", "copy", "-map", "0:v?", "-map", "0:a?")
+			} else {
+				args = append(args, "-c", "copy", "-map", "0?", "-ignore_unknown")
+			}
 
-				if isFallback {
-						args = append(args, "-c", "copy", "-map", "0:v?", "-map", "0:a?")
-				} else {
-						args = append(args, "-c", "copy", "-map", "0?", "-ignore_unknown")
-				}
+			args = append(args, "-f", "mpegts", "-mpegts_flags", "resend_headers+initial_discontinuity", "-copyts", "pipe:1")
+			cmd := exec.Command("ffmpeg", args...)
+			stdout, err := cmd.StdoutPipe()
+			if err != nil { continue }
+			stderr, _ := cmd.StderrPipe()
 
-				args = append(args, "-f", "mpegts", "-mpegts_flags", "resend_headers+initial_discontinuity", "-copyts", "pipe:1")
-				cmd := exec.Command("ffmpeg", args...)
-				stdout, err := cmd.StdoutPipe()
-				if err != nil { return }
-				stderr, _ := cmd.StderrPipe()
+			if err := cmd.Start(); err != nil {
+				continue
+			}
 
-				if err := cmd.Start(); err != nil {
-					return
-				}
-
-				raceMu.Lock()
-				raceCmds = append(raceCmds, cmd)
-				raceMu.Unlock()
-
-				// Error logging
-				go func() {
-					scanner := bufio.NewScanner(stderr)
-					for scanner.Scan() {
-						s.Mu.RLock()
-						currentProc := s.Proc
-						s.Mu.RUnlock()
-						if currentProc == cmd {
-							log.Printf("FFmpeg Error [%s]: %s", s.Key, scanner.Text())
-						}
+			// Error logging
+			go func(c *exec.Cmd, streamKey string) {
+				scanner := bufio.NewScanner(stderr)
+				for scanner.Scan() {
+					s.Mu.RLock()
+					proc := s.Proc
+					s.Mu.RUnlock()
+					if proc == c {
+						log.Printf("FFmpeg Error [%s]: %s", streamKey, scanner.Text())
 					}
-				}()
+				}
+			}(cmd, s.Key)
 
-				buf := make([]byte, FfmpegBuffer)
-				firstChunk := true
+			s.Mu.Lock()
+			s.Proc = cmd
+			s.LastDataTime = time.Now()
+			s.CurrentBytesRead = 0
+			s.RecentChunks = nil
+			s.Mu.Unlock()
+
+			// Monitoring goroutine
+			go func(c *exec.Cmd) {
+				lastBytes := int64(0)
+				lastCheck := time.Now()
+				lowDataTicks := 0
 				
-				// Monitoring for this specific attempt
-				go func() {
-					lastBytes := int64(0)
-					lastCheck := time.Now()
-					lowDataTicks := 0
-					
-					for {
-						time.Sleep(2 * time.Second)
-						s.Mu.RLock()
-						active := s.Active
-						proc := s.Proc
-						currentBytes := s.CurrentBytesRead
-						s.Mu.RUnlock()
-
-						if !active { return }
-						
-						// If we are not the winner, we should eventually die if someone else won
-						if proc != nil && proc != cmd {
-							// If we haven't read a single byte yet, or we're just a zombie
-							if firstChunk {
-								cmd.Process.Kill()
-								return
-							}
-							// Actually, the read loop will handle killing if s.Proc != cmd
-						}
-
-						// If we are the winner, we monitor bitrate
-						if proc == cmd {
-							now := time.Now()
-							diffBytes := currentBytes - lastBytes
-							lastBytes = currentBytes
-							
-							duration := now.Sub(lastCheck).Seconds()
-							if duration > 0 {
-								s.Mu.Lock()
-								s.CurrentBitrate = (float64(diffBytes) * 8) / (duration * 1000000)
-								s.Mu.Unlock()
-							}
-							
-							if diffBytes < 30000 { lowDataTicks++ } else { lowDataTicks = 0 }
-							
-							if time.Since(s.LastDataTime) > DataTimeout || lowDataTicks > 6 {
-								log.Printf("DataTimeout [%s]: FFmpeg frozen/low bitrate, killing winner.", s.Key)
-								cmd.Process.Kill()
-								return
-							}
-							lastCheck = now
-						}
-					}
-				}()
-
 				for {
-					n, err := stdout.Read(buf)
-					if n > 0 {
-						s.Mu.Lock()
-						// Check if we already have a better winner
-						if s.Proc != nil && s.Proc != cmd {
-							s.Mu.Unlock()
-							cmd.Process.Kill()
-							return
-						}
+					s.Mu.RLock()
+					active := s.Active
+					proc := s.Proc
+					currentBytes := s.CurrentBytesRead
+					s.Mu.RUnlock()
 
-						if firstChunk {
+					if !active || proc != c { break }
+					
+					now := time.Now()
+					diffBytes := currentBytes - lastBytes
+					lastBytes = currentBytes
+					
+					duration := now.Sub(lastCheck).Seconds()
+					if duration > 0 {
+						s.Mu.Lock()
+						s.CurrentBitrate = (float64(diffBytes) * 8) / (duration * 1000000)
+						s.Mu.Unlock()
+					}
+					
+					if diffBytes < 30000 { lowDataTicks++ } else { lowDataTicks = 0 }
+					
+					if time.Since(s.LastDataTime) > DataTimeout || lowDataTicks > 15 {
+						log.Printf("DataTimeout [%s]: FFmpeg frozen/low bitrate, killing attempt.", s.Key)
+						if c.Process != nil {
+							c.Process.Kill()
+						}
+						break
+					}
+					lastCheck = now
+					time.Sleep(2 * time.Second)
+				}
+			}(cmd)
+
+			buf := make([]byte, FfmpegBuffer)
+			firstChunk := true
+			var localBytes int64
+			var preWinnerChunks [][]byte
+
+			for {
+				n, err := stdout.Read(buf)
+				if n > 0 {
+					chunk := make([]byte, n)
+					copy(chunk, buf[:n])
+					localBytes += int64(n)
+
+					s.Mu.Lock()
+					s.LastDataTime = time.Now()
+					
+					if firstChunk {
+						preWinnerChunks = append(preWinnerChunks, chunk)
+						
+						// Declare winner after receiving 256KB
+						if localBytes > 262144 {
 							firstChunk = false
-							log.Printf("Winner found for %s: Source #%d (%s)", s.Key, urlIdx, url)
-							s.Proc = cmd
-							s.CurrentUrlIdx = urlIdx
+							log.Printf("Source #%d (%s) works! Promoting to active stream for %s", idx, srcUrl, s.Key)
 							s.CurrentProcessStart = time.Now()
-							s.LastDataTime = time.Now()
-							s.CurrentBytesRead = 0
-							s.RecentChunks = nil
+							s.CurrentBytesRead = localBytes
+							s.RecentChunks = preWinnerChunks
 							
-							// SIGNAL WINNER
-							select {
-							case winnerFound <- true:
-							default:
-							}
-							
-							// KILL ALL OTHERS
-							go func(winner *exec.Cmd) {
-								raceMu.Lock()
-								defer raceMu.Unlock()
-								for _, c := range raceCmds {
-									if c != winner && c.Process != nil {
-										c.Process.Kill()
+							for _, c := range preWinnerChunks {
+								for ch := range s.Clients {
+									select {
+									case ch <- c:
+									default:
 									}
 								}
-							}(cmd)
+							}
+							preWinnerChunks = nil // free memory
 						}
-
-						chunk := make([]byte, n)
-						copy(chunk, buf[:n])
-						s.LastDataTime = time.Now()
+					} else {
 						s.CurrentBytesRead += int64(n)
-						
 						s.RecentChunks = append(s.RecentChunks, chunk)
 						if len(s.RecentChunks) > 32 { s.RecentChunks = s.RecentChunks[1:] }
 
@@ -221,60 +197,44 @@ func startProducer(s *Stream) {
 							default:
 							}
 						}
-						s.Mu.Unlock()
 					}
-					if err != nil {
-						s.Mu.Lock()
-						if s.Proc == cmd {
-							s.Proc = nil
-							log.Printf("Winner [%s] died: %v", s.Key, err)
-							select {
-							case winnerFound <- false:
-							default:
-							}
-						}
-						s.Mu.Unlock()
-						return
-					}
-					
-					s.Mu.RLock()
-					active := s.Active
-					s.Mu.RUnlock()
-					if !active { 
-						cmd.Process.Kill()
-						return 
-					}
+					s.Mu.Unlock()
 				}
-			}(idx, srcUrl)
-
-			// Wait for a winner or timeout to try next source
-			select {
-			case success := <-winnerFound:
-				if success {
-					// We have a working stream! Wait for it to end.
-					for {
-						time.Sleep(1 * time.Second)
-						s.Mu.RLock()
-						active := s.Active
-						proc := s.Proc
-						s.Mu.RUnlock()
-						if !active || proc == nil { break }
-					}
-					goto nextIter
+				
+				if err != nil {
+					log.Printf("Source #%d [%s] died: %v", idx, s.Key, err)
+					break
 				}
-			case <-time.After(4 * time.Second):
-				// Timeout reached, try next source in next loop iteration
-				log.Printf("Source #%d for %s taking too long, trying next...", idx, s.Key)
-				continue
+				
+				s.Mu.RLock()
+				active := s.Active
+				s.Mu.RUnlock()
+				if !active { break }
 			}
+
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			cmd.Wait()
+			stdout.Close()
+			
+			s.Mu.RLock()
+			if !s.Active {
+				s.Mu.RUnlock()
+				break
+			}
+			s.Mu.RUnlock()
+			// Slight delay before trying next source to let network settle
+			time.Sleep(1 * time.Second)
 		}
 		
-		nextIter:
 		s.Mu.RLock()
-		active = s.Active
+		if !s.Active {
+			s.Mu.RUnlock()
+			break
+		}
 		s.Mu.RUnlock()
-		if !active { break }
-		time.Sleep(1 * time.Second)
+		time.Sleep(2 * time.Second)
 	}
 
 	s.Mu.Lock()

@@ -93,23 +93,17 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sourceID := parts[0]
-	channelID := strings.TrimSuffix(parts[1], ".m3u8")
+	channelID := parts[1]
+	// Clean channelID from extensions
+	channelID = strings.TrimSuffix(channelID, ".m3u8")
 	channelID = strings.TrimSuffix(channelID, ".ts")
+	
 	key := fmt.Sprintf("%s:%s", sourceID, channelID)
 
 	configLock.RLock()
 	redirectMode := Config.RedirectMode
-	internalM3u8 := Config.InternalM3u8
 	sourceUrls := Config.Sources[sourceID]
 	configLock.RUnlock()
-
-	// Internal Redirect (.ts -> .m3u8 on this proxy)
-	isTSRequest := strings.HasSuffix(parts[1], ".ts")
-	if internalM3u8 && isTSRequest && !strings.Contains(r.URL.RawQuery, "proxy=1") {
-		log.Printf("Internal Redirect: %s.ts -> %s.m3u8", channelID, channelID)
-		http.Redirect(w, r, "http://"+r.Host+"/"+sourceID+"/"+channelID+".m3u8", http.StatusFound)
-		return
-	}
 
 	// External Redirect (client -> upstream)
 	if redirectMode && !strings.Contains(r.URL.RawQuery, "proxy=1") {
@@ -139,48 +133,30 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		configLock.RLock()
 		sourceUrls := Config.Sources[sourceID]
-		fallbackMode := Config.FallbackMode
 		autoFallback := Config.AutoFallback
 		configLock.RUnlock()
 
 		var urls []string
-		if fallbackMode {
-			urls = []string{FallbackURL}
-		} else {
-			// Try variants provider by provider (Interleaved)
-			for _, u := range sourceUrls {
-				replaced := strings.Replace(u, "{channel_id}", channelID, -1)
-				var variants []string
-				if strings.HasSuffix(replaced, ".m3u8") {
-					variants = append(variants, replaced)
-					variants = append(variants, strings.TrimSuffix(replaced, ".m3u8")+".ts")
-				} else if strings.HasSuffix(replaced, ".ts") {
-					variants = append(variants, replaced)
-					variants = append(variants, strings.TrimSuffix(replaced, ".ts")+".m3u8")
-				} else {
-					variants = append(variants, replaced)
-				}
-				// Try the configured format first. HLS (.m3u8) converted to TS via -c copy can cause PCR boundary jumps every 5-10s.
-				urls = append(urls, variants...)
-			}
+		// 1. First, use the explicitly configured URLs for this source
+		for _, u := range sourceUrls {
+			urls = append(urls, strings.Replace(u, "{channel_id}", channelID, -1))
+		}
 
-			// SMART PROXY: Lookup name and find global alternatives
-			channelNamesLock.RLock()
-			channelName := ChannelNames[key]
-			channelNamesLock.RUnlock()
+		// 2. SMART PROXY: Lookup name and find global alternatives
+		channelNamesLock.RLock()
+		channelName := ChannelNames[key]
+		channelNamesLock.RUnlock()
 
-			if channelName != "" {
-				log.Printf("Smart Proxy: Resolved %s to '%s'. Searching global alternatives...", key, channelName)
-				alts := searchGlobalAlternatives(channelName)
-				if len(alts) > 0 {
-					// Append alternatives before the fallback URL
-					urls = append(urls, alts...)
-				}
+		if channelName != "" {
+			log.Printf("Smart Proxy: Resolved %s to '%s'. Searching global alternatives...", key, channelName)
+			alts := searchGlobalAlternatives(channelName)
+			if len(alts) > 0 {
+				urls = append(urls, alts...)
 			}
+		}
 
-			if autoFallback {
-				urls = append(urls, FallbackURL)
-			}
+		if autoFallback {
+			urls = append(urls, FallbackURL)
 		}
 
 		s = &Stream{Key: key, Urls: urls, Clients: make(map[chan []byte]bool), Created: time.Now(), LastDataTime: time.Now()}

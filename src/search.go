@@ -22,17 +22,21 @@ func searchGlobalAlternatives(channelName string) []string {
 		return nil
 	}
 
-	// Clean name for better search (remove common quality markers)
+	// Clean name for better search (remove common quality markers and symbols)
 	cleanName := channelName
 	replacer := strings.NewReplacer(
 		"FHD", "", "HD", "", "SD", "", "4K", "", "UHD", "",
-		"CZ", "", "SK", "", "EN", "", "RU", "", "PL", "",
+		"CZ", "", "SK", "", "EN", "", "RU", "", "PL", "", "HU", "",
 		":", "", "|", "", "-", "", "(", "", ")", "", "[", "", "]", "",
+		".", " ", "_", " ",
 	)
-	cleanName = strings.TrimSpace(replacer.Replace(cleanName))
+	cleanName = replacer.Replace(cleanName)
+	
+	// Collapse multiple spaces
+	cleanName = strings.Join(strings.Fields(cleanName), " ")
 	
 	// If the name is too short after cleaning, use the original
-	if len(cleanName) < 3 {
+	if len(cleanName) < 2 {
 		cleanName = channelName
 	}
 

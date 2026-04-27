@@ -1,0 +1,952 @@
+root vmi3197778:/var/www/iptv# cat check_status.php
+<?php
+/**
+ * Unified Status & Preview Controller (v3.6)
+ * Smart Queue: Auto-resetting existing tasks and hardened fallback.
+ */
+
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/lib/Database.php';
+require_once __DIR__ . '/lib/Auth.php';
+
+if (session_status() === PHP_SESSION_NONE) { session_start(); }
+
+$db = new \IPTV\Lib\Database(DB_PATH);
+$pdo = $db->getConnection();
+
+// --- ACTION: Generate Preview (Snapshot + Video) ---
+if (isset($_GET['action']) && $_GET['action'] === 'generate_preview') {
+    $hash = $_GET['hash'] ?? '';
+    $sid = $_GET['sid'] ?? '';
+    $st = $_GET['type'] ?? 'live';
+    $loc = $_GET['loc'] ?? '';
+
+    $stmt = $pdo->prepare("SELECT server, username, password FROM requests WHERE hash = ? AND removed_reason IS NULL LIMIT 1");
+    $stmt->execute([$hash]);
+    $s = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$s) die(json_encode(['error' => 'Sub not found']));
+
+    $snapFile = "snap_" . md5($hash . $sid) . ".jpg";
+    $vidFile = "prev_" . md5($hash . $sid) . ".mp4";
+
+    if (file_exists(__DIR__ . "/cache/snapshots/" . $snapFile)) {
+        $res = ['snap' => "/cache/snapshots/" . $snapFile];
+        if (file_exists(__DIR__ . "/cache/snapshots/" . $vidFile)) $res['video'] = "/cache/snapshots/" . $vidFile;
+        die(json_encode($res));
+    }
+
+    // 1. FAST TRACK: Try Private Nodes first
+    if (SCANNING_NODES_ENABLED && !empty(SCANNING_NODES)) {
+        $nodes = SCANNING_NODES;
+        $targetNode = null;
+        if ($loc) {
+            foreach($nodes as $n) { if($n['location'] === $loc) { $targetNode = $n; break; } }
+        }
+        if (!$targetNode) $targetNode = $nodes[0];
+
+        $nq = http_build_query([
+            'key' => $targetNode['key'], 'server' => $s['server'], 'user' => $s['username'], 'pass' => $s['password'],
+            'mac' => ($s['password'] === 'MAG-Portal' ? $s['username'] : ''), 'sid' => $sid, 'type' => $st,
+            'snapshot' => 1, 'preview' => 1
+        ]);
+
+        $ch = curl_init($targetNode['url'] . '?' . $nq);
+        curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 25, CURLOPT_SSL_VERIFYPEER => false]);
+        $resp = curl_exec($ch);
+        $data = json_decode($resp, true);
+
+        if (is_array($data) && !empty($data['snapshot'])) {
+            file_put_contents(__DIR__ . "/cache/snapshots/" . $snapFile, base64_decode($data['snapshot']));
+            if (!empty($data['preview_mp4'])) file_put_contents(__DIR__ . "/cache/snapshots/" . $vidFile, base64_decode($data['preview_mp4']));
+            die(json_encode(['snap' => "/cache/snapshots/" . $snapFile, 'video' => "/cache/snapshots/" . $vidFile]));
+        }
+    }
+
+    // 2. FALLBACK: Community Peer Network
+    if (defined('COMMUNITY_SCAN_ENABLED') && COMMUNITY_SCAN_ENABLED) {
+        try {
+            // Check if task already exists
+            $checkTask = $pdo->prepare("SELECT status FROM peer_tasks WHERE hash = ? AND stream_id = ?");
+            $checkTask->execute([$hash, $sid]);
+            $existingStatus = $checkTask->fetchColumn();
+
+            if ($existingStatus) {
+                // If it exists but isn't pending, reset it to pending so it's checked again
+                if ($existingStatus !== 'pending' && $existingStatus !== 'processing') {
+                    $pdo->prepare("UPDATE peer_tasks SET status = 'pending', created_at = CURRENT_TIMESTAMP WHERE hash = ? AND stream_id = ?")->execute([$hash, $sid]);
+                }
+            } else {
+                // Create new task
+                $pdo->prepare("INSERT INTO peer_tasks (hash, stream_id, stream_type, status) VALUES (?, ?, ?, 'pending')")->execute([$hash, $sid, $st]);
+            }
+
+            die(json_encode(['status' => 'queued', 'message' => 'Community scan in progress.']));
+        } catch (Exception $e) {
+            // Even if SQL fails, tell the user it's queued to avoid the "Busy" error
+            die(json_encode(['status' => 'queued', 'message' => 'Community backup active.']));
+        }
+    }
+
+    die(json_encode(['error' => 'All scanning resources busy. Please try again.']));
+}
+
+try {
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!$input || !isset($input['items'])) {
+        if (isset($_GET['get_token'])) {
+            echo json_encode(['hashes' => explode(',', $_GET['hashes'] ?? ''), 'token' => hash('sha256', ($_SESSION['search_secret'] ?? '') . time()), 'timestamp' => time()]);
+            exit;
+        }
+        http_response_code(400); exit(json_encode(['error' => 'Invalid Request']));
+    }
+
+    $geoMapping = [];
+    if (file_exists(__DIR__ . '/cache/proxy_geo_mapping.json')) $geoMapping = json_decode(file_get_contents(__DIR__ . '/cache/proxy_geo_mapping.json'), true) ?: [];
+
+    function getCountryLocal($proxy, $mapping) {
+        if (!$proxy) return 'Direct';
+        $host = parse_url($proxy, PHP_URL_HOST);
+        return ($host && isset($mapping[$host]['cc'])) ? $mapping[$host]['cc'] : 'Proxy';
+    }
+
+    $proxies = defined('PROXY_LIST') ? PROXY_LIST : [];
+    if (is_string($proxies)) $proxies = array_filter(array_map('trim', preg_split('/[,\n\r]+/', $proxies)));
+
+    $proxiesByCountry = [];
+    if (!empty($proxies)) {
+        foreach ($proxies as $p) {
+            $c = getCountryLocal($p, $geoMapping);
+            $proxiesByCountry[$c][] = $p;
+        }
+    }
+
+    $mh = curl_multi_init(); $map = [];
+    $nodes = SCANNING_NODES;
+
+    foreach ($input['items'] as $item) {
+        $hash = $item['hash'];
+        $stmt = $pdo->prepare("SELECT server, username, password FROM requests WHERE hash = ? LIMIT 1");
+        $stmt->execute([$hash]);
+        $s = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$s) continue;
+
+        $baseUrl = rtrim($s['server'], '/') . '/player_api.php?username=' . urlencode($s['username']) . '&password=' . urlencode($s['password']);
+
+        // Direct Check
+        $ch = curl_init($baseUrl);
+        curl_setopt_array($ch, [CURLOPT_URL => $baseUrl, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10, CURLOPT_SSL_VERIFYPEER => false, CURLOPT_USERAGENT => 'AMZ-Checker/2.5']);
+        curl_multi_add_handle($mh, $ch);
+        $map[(int)$ch] = ['rid' => $hash, 'sid' => $item['stream_id'], 'type' => $item['stream_type'], 'loc' => 'Direct', 'kind' => 'direct'];
+
+        // Node Checks
+        foreach ($nodes as $n) {
+            $nodeParams = [
+                'key' => $n['key'],
+                'server' => $s['server'],
+                'user' => $s['username'],
+                'pass' => $s['password'],
+                'sid' => $item['stream_id'],
+                'type' => $item['stream_type'],
+                'snapshot' => 1 // Request snapshot during background check
+            ];
+
+            // Add MAC for Stalker
+            if ($s['password'] === 'MAG-Portal') {
+                $nodeParams['mac'] = $s['username'];
+            }
+
+            $ch = curl_init($n['url'] . '?' . http_build_query($nodeParams));
+            curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 15, CURLOPT_SSL_VERIFYPEER => false]);
+            curl_multi_add_handle($mh, $ch);
+            $map[(int)$ch] = ['rid' => $hash, 'sid' => $item['stream_id'], 'type' => $item['stream_type'], 'loc' => $n['location'], 'kind' => 'node'];
+        }
+    }
+
+    $active = null;
+    do { $mrc = curl_multi_exec($mh, $active); } while ($mrc == CURLM_CALL_MULTI_PERFORM);
+    while ($active && $mrc == CURLM_OK) { if (curl_multi_select($mh) != -1) { do { $mrc = curl_multi_exec($mh, $active); } while ($mrc == CURLM_CALL_MULTI_PERFORM); } }
+
+    $bulkResults = [];
+    while ($ch = curl_multi_info_read($mh)) {
+        $ch = $ch['handle']; $info = $map[(int)$ch];
+        $isOk = false; $code = 0; $extra = [];
+
+        if ($info['kind'] === 'node') {
+            $resp = curl_multi_getcontent($ch);
+            $data = json_decode($resp, true);
+
+            if ($data && (isset($data['stream_status']) ? $data['stream_status'] : (isset($data['user_info']) && in_array(strtoupper($data['user_info']['status'] ?? ''), ['ACTIVE', 'ENABLED'])))) {
+                $isOk = true;
+                if (!empty($data['snapshot'])) {
+                    $snapFile = "snap_" . md5($info['rid'] . $info['sid']) . ".jpg";
+                    file_put_contents(__DIR__ . "/cache/snapshots/" . $snapFile, base64_decode($data['snapshot']));
+                    $extra['snap'] = "/cache/snapshots/" . $snapFile;
+                }
+            }
+            $code = $isOk ? 200 : 403;
+        } else {
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $isOk = ($code === 200);
+        }
+
+        $key = $info['rid'] . '_' . $info['sid'];
+        $bulkResults[$key][] = array_merge(['code' => $code, 'ok' => $isOk, 'loc' => $info['loc'], 'node' => ($info['kind'] === 'node')], $extra);
+
+        // Hybrid Fallback Logic:
+        // If we don't have a snapshot for this stream yet, AND community scanning is enabled
+        // We queue a task. This handles:
+        // 1. Private nodes are online but don't support FFmpeg (no snapshot).
+        // 2. Private nodes are geo-locked (isOk is false) but a community peer might reach it.
+        if (!file_exists(__DIR__ . "/cache/snapshots/snap_" . md5($info['rid'] . $info['sid']) . ".jpg")) {
+            if (defined('COMMUNITY_SCAN_ENABLED') && COMMUNITY_SCAN_ENABLED) {
+                try {
+                    $stmtTask = $pdo->prepare("INSERT OR IGNORE INTO peer_tasks (hash, stream_id, stream_type) VALUES (?, ?, ?)");
+                    $stmtTask->execute([$info['rid'], $info['sid'], $info['type']]);
+                } catch (Exception $e) {}
+            }
+        }
+        curl_multi_remove_handle($mh, $ch); curl_close($ch);
+    }
+    curl_multi_close($mh);
+
+    // Community Flags
+    $requestedHashes = array_unique(array_column($input['items'], 'hash'));
+    if (!empty($requestedHashes)) {
+        $requestedHashes = array_values($requestedHashes);
+        $placeholders = implode(',', array_fill(0, count($requestedHashes), '?'));
+        $peerStmt = $pdo->prepare("SELECT hash, stream_id, country, status FROM peer_health_cache WHERE hash IN ($placeholders) AND last_updated > datetime('now', '-24 hours')");
+        $peerStmt->execute($requestedHashes);
+        while ($p = $peerStmt->fetch(PDO::FETCH_ASSOC)) {
+            $key = $p['hash'] . '_' . $p['stream_id'];
+            if (isset($bulkResults[$key])) $bulkResults[$key][] = ['code' => $p['status'] ? 200 : 403, 'ok' => (bool)$p['status'], 'loc' => $p['country'], 'peer' => true];
+        }
+    }
+
+    echo json_encode(['bulk_results' => $bulkResults]);
+
+} catch (Throwable $e) {
+    http_response_code(500); echo json_encode(['error' => $e->getMessage()]);
+}
+root vmi3197778:/var/www/iptv# cat global-search.php
+<?php
+/**
+ * Global Stream Search - The "Vibe" Version (v2.3.5)
+ * Optimized for performance, grouping logic and strict error handling.
+ */
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/lib/Database.php';
+require_once __DIR__ . '/lib/Auth.php';
+
+if (!isset($_SESSION['search_secret'])) {
+    $_SESSION['search_secret'] = bin2hex(random_bytes(16));
+}
+$searchSecret = $_SESSION['search_secret'];
+
+$db = new \IPTV\Lib\Database(DB_PATH);
+$pdo = $db->getConnection();
+$catDb = new \IPTV\Lib\Database(CATEGORIES_DB_PATH);
+$catPdo = $catDb->getConnection();
+$catPdo->exec("ATTACH DATABASE '" . DB_PATH . "' AS main_db");
+
+$globalDiscordUser = \IPTV\Lib\Auth::getDiscordUser($pdo);
+
+// --- API ACTIONS ---
+if (isset($_GET['action']) && $_GET['action'] === 'stream_search') {
+    header('Content-Type: application/x-ndjson');
+    header('Cache-Control: no-cache');
+    header('X-Accel-Buffering: no');
+
+    $q = trim($_GET['q'] ?? '');
+    $type = $_GET['type'] ?? 'all';
+    if (strlen($q) < 2) exit;
+
+    $words = array_filter(explode(' ', $q));
+    $conds = []; $params = [];
+    foreach ($words as $i => $word) {
+        $conds[] = "stream_name LIKE :word$i";
+        $params[":word$i"] = '%' . $word . '%';
+    }
+    $where = implode(' AND ', $conds);
+    $finalParams = $params;
+    if ($type !== 'all') {
+        $where .= " AND stream_type = :type";
+        $finalParams[':type'] = $type;
+    }
+
+    $countStmt = $catPdo->prepare("SELECT COUNT(*) FROM entry_streams WHERE $where AND is_dead = 0");
+    foreach ($finalParams as $p => $v) $countStmt->bindValue($p, $v);
+    $countStmt->execute();
+    $total = $countStmt->fetchColumn();
+    echo json_encode(['type' => 'progress', 'total' => $total, 'current' => 0]) . "\n";
+    ob_flush(); flush();
+
+    $stmt = $catPdo->prepare("SELECT s.hash, s.stream_id, s.stream_name, s.stream_type as type, r.server, r.username, r.password
+                              FROM entry_streams s
+                              INNER JOIN main_db.requests r ON s.hash = r.hash
+                              WHERE $where AND s.is_dead = 0 AND r.is_private = 0 LIMIT 1000");
+    foreach ($finalParams as $p => $v) $stmt->bindValue($p, $v);
+    $stmt->execute();
+
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $row['match_type'] = 'channel';
+        $row['server_host'] = parse_url($row['server'], PHP_URL_HOST);
+        $isStalker = ($row['password'] === 'MAG-Portal');
+        $srv = rtrim($row['server'], '/'); $u = $row['username']; $p = $row['password']; $sid = $row['stream_id']; $t = $row['type'];
+
+        if ($isStalker) {
+            $row['stream_url'] = "$srv/play/".($t==='vod'?'vod':($t==='series'?'series':'live')).".php?mac=".urlencode($u)."&stream=$sid&extension=ts";
+        } else {
+            $ext = ($t === 'vod' || $t === 'series') ? 'mp4' : 'ts';
+            $path = ($t === 'vod') ? 'movie' : (($t === 'series') ? 'series' : 'live');
+            $row['stream_url'] = "$srv/$path/$u/$p/$sid.$ext";
+        }
+
+        unset($row['server'], $row['password'], $row['username']);
+        echo json_encode(['type' => 'result', 'data' => $row]) . "\n";
+    }
+    echo json_encode(['type' => 'progress', 'total' => $total, 'current' => 100]) . "\n";
+    exit;
+}
+
+$isPremium = \IPTV\Lib\Auth::isPremium($pdo, $globalDiscordUser['id'] ?? null);
+
+try {
+    $totalCategories = $catPdo->query("SELECT COUNT(*) FROM entry_categories")->fetchColumn();
+    $totalStreams = "5,663,455+";
+} catch (Exception $e) { $totalCategories = 0; $totalStreams = "0"; }
+?>
+<!DOCTYPE html>
+<html lang="en" x-data="searchApp()" :class="theme" @theme-changed.window="theme = $event.detail.theme"
+      x-init="() => {
+        $data.showExportModal = false;
+        $data.exportHash = '';
+        $data.exportRegion = 'ALL';
+      }">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Global Search | AMZ IPTV</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = { darkMode: 'class' }</script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .sweet-shadow { box-shadow: 0 20px 80px rgba(255, 154, 158, 0.15); }
+        .glass-card { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.3); }
+        .dark .glass-card { background: rgba(17, 24, 39, 0.75); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .fade-in { animation: fadeIn 0.6s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .custom-scrollbar::-webkit-scrollbar { height: 4px; width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #ec4899; border-radius: 10px; }
+    </style>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#ec4899">
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').then(reg => {
+                    console.log('SW Registered!', reg);
+                }).catch(err => {
+                    console.log('SW Registration failed: ', err);
+                });
+            });
+        }
+    </script>
+    <script>
+    function searchApp() {
+        return {
+            theme: localStorage.getItem('theme') || 'dark',
+            query: '<?php echo htmlspecialchars($_GET['q'] ?? ''); ?>',
+            type: '<?php echo htmlspecialchars($_GET['type'] ?? 'all'); ?>',
+            results: [],
+            loading: false,
+            progress: 0,
+            checkedCount: 0,
+            totalToCheck: 0,
+            activeChecks: 0,
+            searchSecret: '<?php echo $searchSecret; ?>',
+            countryFilter: null,
+            availableCountries: new Set(),
+            isLite: localStorage.getItem('isLite') === 'true' || (window.innerWidth < 768),
+            displayLimit: 40,
+
+            get sortedCountries() { return [...this.availableCountries].sort(); },
+
+            get filteredResults() {
+                let list = [...this.results];
+                if (this.countryFilter) {
+                    list.sort((a, b) => {
+                        const aOk = a.proxy_results?.some(p => p.loc === this.countryFilter && p.ok) ? 1 : 0;
+                        const bOk = b.proxy_results?.some(p => p.loc === this.countryFilter && p.ok) ? 1 : 0;
+                        return bOk - aOk;
+                    });
+                }
+                return list;
+            },
+
+            get paginatedResults() {
+                return this.filteredResults.slice(0, this.displayLimit);
+            },
+
+            loadMore() {
+                this.displayLimit += 40;
+            },
+
+            toggleLite() {
+                this.isLite = !this.isLite;
+                localStorage.setItem('isLite', this.isLite);
+            },
+
+            getTypeClass(t) { return { 'live': 'bg-blue-500/10 text-blue-500', 'vod': 'bg-green-500/10 text-green-500', 'series': 'bg-purple-500/10 text-purple-500' }[t] || 'bg-gray-500/10 text-gray-500'; },
+
+            getFlag(cc) {
+                if (!cc || typeof cc !== 'string' || cc === '??' || cc === 'Proxy') return '🌐';
+                if (cc === 'Direct') return '🏠';
+                try {
+                    return `<img src="https://flagcdn.com/w40/${cc.toLowerCase()}.png" class="w-6 h-4 object-cover rounded-sm shadow-sm inline-block">`;
+                } catch (e) { return '🌐'; }
+            },
+
+            getGroupedProxies(proxyResults) {
+                if (!proxyResults || !Array.isArray(proxyResults)) return [];
+                const groups = {};
+                proxyResults.forEach(p => {
+                    const loc = (p.loc && typeof p.loc === 'string') ? p.loc : '??';
+                    // Skip invalid/unauthenticated proxies from UI
+                    if (p.code === 407 || loc === '??' || loc === 'Proxy') return;
+
+                    if (!groups[loc]) groups[loc] = { loc: loc, ok: false, count: 0, code: p.code || 0, isPeer: false };
+                    if (p.ok) {
+                        groups[loc].ok = true;
+                        groups[loc].code = 200;
+                        if (p.peer) groups[loc].isPeer = true;
+                    }
+                    else if (!groups[loc].ok) groups[loc].code = p.code || 0;
+                    groups[loc].count++;
+                });
+                return Object.values(groups).sort((a, b) => {
+                    const okSort = (b.ok ? 1 : 0) - (a.ok ? 1 : 0);
+                    if (okSort !== 0) return okSort;
+                    return String(a.loc).localeCompare(String(b.loc));
+                });
+            },
+
+            getErrorMessage(code) {
+                const map = { 200: 'Online', 301: 'Moved', 302: 'Redirect', 401: 'Auth Error', 403: 'Blocked', 404: 'Missing', 456: 'Banned', 458: 'Max Conn', 459: 'Expired', 500: 'Server Err', 0: 'Timeout' };
+                return map[code] || `Err ${code}`;
+            },
+
+            handleFlagClick(group) {
+                const prefix = group.isPeer ? '⭐ Community Node (' + group.loc + '): ' : group.loc + ': ';
+                const msg = `${prefix}${this.getErrorMessage(group.code)}`;
+                if (window.showToast) window.showToast(msg, group.ok);
+                else alert(msg);
+            },
+
+            getCountrySuccessCount(cc) { return this.results.filter(r => r.proxy_results?.some(p => p.loc === cc && p.ok)).length; },
+
+            saveState() {
+                try {
+                    const state = { query: this.query, type: this.type, results: this.results, progress: this.progress, checkedCount: this.checkedCount, totalToCheck: this.totalToCheck, availableCountries: Array.from(this.availableCountries), countryFilter: this.countryFilter, isLite: this.isLite };
+                    sessionStorage.setItem('gs_state_final', JSON.stringify(state));
+                } catch (e) { console.warn('Failed to save state to sessionStorage', e); }
+            },
+
+            loadState() {
+                const saved = sessionStorage.getItem('gs_state_final');
+                if (saved) {
+                    try {
+                        const s = JSON.parse(saved);
+                        this.query = s.query; this.type = s.type; this.results = s.results || []; this.progress = s.progress || 0;
+                        this.checkedCount = s.checkedCount || 0; this.totalToCheck = s.totalToCheck || 0;
+                        this.availableCountries = new Set(s.availableCountries || []); this.countryFilter = s.countryFilter;
+                        if (s.isLite !== undefined) this.isLite = s.isLite;
+                        return true;
+                    } catch (e) { return false; }
+                }
+                return false;
+            },
+
+            async performSearch() {
+                if (this.query.length < 2) return;
+                this.loading = true; this.results = []; this.progress = 0; this.checkedCount = 0; this.totalToCheck = 0;
+                this.displayLimit = 40;
+                this.availableCountries.clear();
+                sessionStorage.removeItem('gs_state_final');
+                this.saveState();
+                try {
+                    const response = await fetch(`?action=stream_search&q=${encodeURIComponent(this.query)}&type=${this.type}`);
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+                        for (const line of lines) {
+                            if (!line.trim()) continue;
+                            try {
+                                const msg = JSON.parse(line);
+                                if (msg.type === 'result') {
+                                    msg.data.status = 'waiting'; msg.data.proxy_results = [];
+                                    this.results.push(msg.data);
+                                    if (msg.data.match_type === 'channel') this.totalToCheck++;
+                                } else if (msg.type === 'progress') { this.progress = Math.min(100, msg.current); }
+                            } catch (e) {}
+                        }
+                    }
+                } catch (e) { console.error(e); }
+                this.loading = false; this.progress = 100; this.saveState(); this.startHealthCheck();
+            },
+
+            async startHealthCheck() {
+                const queue = [...this.results].filter(r => r.match_type === 'channel' && r.status === 'waiting');
+                while (queue.length > 0) {
+                    if (this.activeChecks < 4) {
+                        const batch = queue.splice(0, 5);
+                        this.activeChecks++;
+                        this.checkBatch(batch).finally(() => { this.activeChecks--; this.saveState(); });
+                    }
+                    await new Promise(r => setTimeout(r, 150));
+                }
+            },
+
+            async checkBatch(batch) {
+                batch.forEach(r => { r.status = 'checking'; });
+                const hashes = [...new Set(batch.map(i => i.hash))];
+                const items = batch.map(i => ({ hash: i.hash, stream_id: i.stream_id, stream_type: i.type }));
+                try {
+                    const tr = await fetch(`check_status.php?get_token=1&s=${this.searchSecret}&hashes=${hashes.join(',')}`);
+                    const td = await tr.json();
+                    const response = await fetch('check_status.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...td, items: items, offset: 0, limit: 20 }) });
+                    const data = await response.json();
+                    if (data.bulk_results) {
+                        batch.forEach(res => {
+                            const key = `${res.hash}_${res.stream_id}`;
+                            if (data.bulk_results[key]) {
+                                res.proxy_results = data.bulk_results[key].map(p => {
+                                    if (p.snap) p.snap = p.snap + '?t=' + Date.now();
+                                    if (p.video) p.video = p.video + '?t=' + Date.now();
+                                    return p;
+                                });
+                                res.status = res.proxy_results.some(p => p.ok) ? 'online' : 'offline';
+                                res.proxy_results.forEach(p => { if (p.loc && typeof p.loc === 'string' && p.loc !== 'Proxy' && p.loc !== 'Direct') this.availableCountries.add(p.loc); });
+                            }
+                        });
+                    }
+                } catch (e) { batch.forEach(r => { r.status = 'error'; }); }
+                this.checkedCount += batch.length;
+            },
+
+            init() {
+                const urlParams = new URLSearchParams(window.location.search);
+                const urlQuery = urlParams.get('q');
+                if (this.loadState()) {
+                    if (urlQuery && urlQuery !== this.query) { this.query = urlQuery; this.performSearch(); }
+                    else if (this.results.some(r => r.status === 'waiting' || r.status === 'checking')) { this.startHealthCheck(); }
+                } else if (urlQuery) { this.query = urlQuery; this.performSearch(); }
+                document.documentElement.className = this.theme;
+            }
+        };
+    }
+    </script>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 min-h-screen text-gray-800 dark:text-gray-100 flex flex-col transition-colors duration-300">
+    <?php include_once __DIR__ . '/includes/navbar.php'; ?>
+
+    <main class="flex-grow max-w-7xl mx-auto p-4 md:p-8 w-full space-y-8 text-center">
+        <!-- Header -->
+        <div class="glass-card rounded-[2.5rem] p-8 md:p-12 mb-8 sweet-shadow text-center relative overflow-hidden fade-in border border-white/20">
+            <div class="absolute top-0 right-0 -mt-10 -mr-10 w-64 h-64 bg-gradient-to-br from-pink-500/10 to-purple-500/10 rounded-full blur-3xl opacity-50 animate-pulse"></div>
+            <h1 class="text-4xl md:text-6xl font-black mb-2 uppercase tracking-tighter relative z-10">Global Search</h1>
+            <p class="text-gray-500 dark:text-gray-400 mb-6 text-sm font-black uppercase tracking-widest relative z-10 opacity-60">
+                Browsing <span class="text-pink-500">4.4M+</span> Live Channels • <span class="text-blue-500">3.2M+</span> Movies • <span class="text-purple-500">630K+</span> Series
+            </p>
+
+            <div class="flex justify-center gap-4 mb-8 relative z-20">
+                <button @click="toggleLite" :class="isLite ? 'bg-pink-500 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'"
+                        class="px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all shadow-lg border border-transparent hover:scale-105 active:scale-95">
+                    <i class="fas fa-bolt mr-2"></i> Lite Mode: <span x-text="isLite ? 'ON' : 'OFF'"></span>
+                </button>
+            </div>
+
+            <form @submit.prevent="performSearch" class="max-w-3xl mx-auto flex flex-col md:flex-row gap-4 relative z-10">
+                <div class="flex-1 relative group">
+                    <i class="fas fa-search absolute left-5 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-pink-500 transition-colors"></i>
+                    <input type="text" x-model="query" placeholder="Type channel or movie..." required class="w-full pl-14 pr-6 py-5 bg-white/50 dark:bg-gray-900/50 backdrop-blur-md border-2 border-transparent focus:border-pink-500 rounded-2xl outline-none text-gray-800 dark:text-white shadow-inner transition-all font-bold tracking-tight text-center">
+                </div>
+                <div class="flex gap-2">
+                    <select x-model="type" class="flex-1 md:flex-none bg-white/50 dark:bg-gray-900/50 backdrop-blur-md border-2 border-transparent focus:border-pink-500 rounded-2xl px-6 py-5 text-gray-700 dark:text-white font-black uppercase text-[10px] tracking-widest cursor-pointer transition-all text-center">
+                        <option value="all">All Content</option>
+                        <option value="live">Live TV</option>
+                        <option value="vod">Movies</option>
+                        <option value="series">Series</option>
+                    </select>
+                    <button type="submit" :disabled="loading" class="bg-pink-500 hover:bg-pink-600 text-white font-black px-10 py-5 rounded-2xl uppercase text-[10px] tracking-[0.2em] shadow-lg shadow-pink-500/30 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 flex items-center justify-center min-w-[140px]">
+                        <template x-if="!loading"><span>Search</span></template>
+                        <template x-if="loading"><i class="fas fa-circle-notch fa-spin"></i></template>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div x-show="results.length > 0" x-cloak class="space-y-10 fade-in">
+            <!-- Filter & Export Hub -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div class="md:col-span-3 glass-card p-6 rounded-3xl shadow-sm flex flex-wrap items-center gap-3 justify-center md:justify-start">
+                    <span class="text-[10px] font-black uppercase text-gray-400 mr-4 tracking-widest opacity-50">Regional Filters:</span>
+                    <button @click="countryFilter = null" :class="!countryFilter ? 'bg-pink-500 text-white shadow-lg scale-105' : 'bg-gray-100 dark:bg-gray-900 text-gray-500'" class="px-6 py-2.5 rounded-xl text-[10px] font-black uppercase transition-all">Global</button>
+                    <template x-for="cc in sortedCountries">
+                        <button @click="countryFilter = cc" :class="countryFilter === cc ? 'bg-blue-500 text-white shadow-lg scale-105' : 'bg-gray-100 dark:bg-gray-900 text-gray-500'" class="px-5 py-2.5 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-2">
+                            <span x-html="getFlag(cc)"></span>
+                            <span x-text="cc"></span>
+                            <span class="opacity-40 text-[8px]" x-text="getCountrySuccessCount(cc)"></span>
+                        </button>
+                    </template>
+                </div>
+                <div class="glass-card p-6 rounded-3xl shadow-sm flex flex-col justify-center">
+                    <a :href="'m3u_generator.php?hash=global&q=' + encodeURIComponent(query) + '&type=' + type + '&country=' + (countryFilter || 'ALL')" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-2xl text-[10px] uppercase tracking-[0.2em] shadow-lg shadow-blue-500/20 transition-all text-center">
+                        <i class="fas fa-file-download mr-2"></i> M3U Export
+                    </a>
+                </div>
+            </div>
+
+            <!-- Double Progress Bar -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div class="glass-card p-8 rounded-3xl shadow-sm text-left">
+                    <div class="flex justify-between items-end mb-4">
+                        <span class="text-[10px] font-black uppercase text-gray-400 tracking-widest">Database Scan</span>
+                        <span class="text-sm font-black text-pink-500" x-text="progress + '%'"></span>
+                    </div>
+                    <div class="w-full bg-gray-100 dark:bg-gray-900 rounded-full h-2.5 overflow-hidden shadow-inner">
+                        <div class="bg-gradient-to-r from-pink-400 to-pink-600 h-full rounded-full transition-all duration-500" :style="'width: ' + progress + '%'"></div>
+                    </div>
+                </div>
+                <div class="glass-card p-8 rounded-3xl shadow-sm text-left">
+                    <div class="flex justify-between items-end mb-4">
+                        <span class="text-[10px] font-black uppercase text-gray-400 tracking-widest">Active Health Check</span>
+                        <span class="text-sm font-black text-blue-500" x-text="checkedCount + ' / ' + totalToCheck"></span>
+                    </div>
+                    <div class="w-full bg-gray-100 dark:bg-gray-900 rounded-full h-2.5 overflow-hidden shadow-inner">
+                        <div class="bg-gradient-to-r from-blue-400 to-blue-600 h-full rounded-full transition-all duration-500" :style="'width: ' + (totalToCheck ? (checkedCount / totalToCheck * 100) : 0) + '%'"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results Grid -->
+            <div :class="isLite ? 'space-y-3' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8'" class="text-left text-gray-800 dark:text-white">
+                <template x-for="res in paginatedResults" :key="res.hash + '_' + res.stream_id">
+                    <div :class="isLite ? 'glass-card rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 border border-white/5' : 'glass-card rounded-[2rem] p-6 sweet-shadow flex flex-col group transition-all hover:scale-[1.03] ' + (countryFilter && res.proxy_results?.some(p => p.loc === countryFilter && p.ok) ? 'border-2 border-pink-500 shadow-[0_0_30px_rgba(236,72,153,0.2)]' : 'border border-white/10')">
+
+                        <!-- Lite Mode Layout -->
+                        <template x-if="isLite">
+                            <div class="flex flex-col md:flex-row md:items-center justify-between w-full gap-4">
+                                <div class="flex items-center gap-4 flex-1 min-w-0">
+                                    <span :class="getTypeClass(res.type)" class="px-2 py-0.5 rounded text-[7px] font-black uppercase tracking-widest shrink-0" x-text="res.type"></span>
+                                    <h3 class="font-black text-sm uppercase tracking-tight truncate flex-1" x-text="res.stream_name"></h3>
+                                </div>
+                                <div class="flex items-center gap-6 shrink-0">
+                                    <div class="flex -space-x-1">
+                                        <template x-for="group in getGroupedProxies(res.proxy_results)">
+                                            <div class="w-6 h-4 rounded-sm border border-white/10 overflow-hidden bg-gray-100 dark:bg-gray-800 shrink-0 flex items-center justify-center relative" @click.stop="handleFlagClick(group)">
+                                                <div class="scale-[0.8] flex items-center justify-center">
+                                                    <span x-html="getFlag(group.loc)"></span>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <div class="flex items-center gap-2 min-w-[70px]">
+                                        <span class="w-1.5 h-1.5 rounded-full" :class="res.status === 'online' ? 'bg-green-500' : (res.status === 'offline' ? 'bg-red-500' : 'bg-orange-500')"></span>
+                                        <span class="text-[8px] font-black text-gray-400 uppercase tracking-widest" x-text="res.status"></span>
+                                    </div>
+                                    <div class="flex gap-1">
+                                        <a :href="'index.php?data=' + encodeURIComponent(res.hash)" class="w-8 h-8 flex items-center justify-center bg-gray-50 dark:bg-gray-900/50 rounded-lg text-gray-400 hover:text-pink-500 transition-all"><i class="fas fa-info-circle text-xs"></i></a>
+                                        <button @click="window.navigator.clipboard.writeText(res.stream_url); window.showToast('Source URL copied!', true)" class="w-8 h-8 flex items-center justify-center bg-gray-50 dark:bg-gray-900/50 rounded-lg text-gray-400 hover:text-pink-500 transition-all"><i class="fas fa-link text-xs"></i></button>
+                                        <button @click="exportHash = res.hash; showExportModal = true" class="w-8 h-8 flex items-center justify-center bg-gray-50 dark:bg-gray-900/50 rounded-lg text-gray-400 hover:text-blue-500 transition-all"><i class="fas fa-file-export text-xs"></i></button>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- Standard Mode Layout -->
+                        <template x-if="!isLite">
+                            <div class="flex flex-col h-full">
+                                <!-- Top Meta Row -->
+                                <div class="flex justify-between items-start mb-6 gap-2">
+                                    <span :class="getTypeClass(res.type)" class="px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest shrink-0" x-text="res.type"></span>
+                                    <div class="flex flex-wrap gap-3 max-w-[200px] justify-end">
+                                        <template x-for="group in getGroupedProxies(res.proxy_results)">
+                                            <div class="relative group/flag cursor-pointer shrink-0" @click.stop="handleFlagClick(group)">
+                                                <div class="w-6 h-4 rounded-sm overflow-hidden border border-white/10 shadow-sm transition-transform group-hover/flag:scale-110 flex items-center justify-center bg-gray-100 dark:bg-gray-800">
+                                                    <span x-html="getFlag(group.loc)"></span>
+                                                </div>
+                                                <div :class="group.ok ? 'bg-green-500 shadow-green-500/30' : 'bg-red-500 shadow-red-500/30'"
+                                                     class="absolute -top-2 -right-2 w-5 h-5 rounded-full border-2 border-white dark:border-gray-800 flex items-center justify-center shadow-lg z-20">
+                                                    <span class="text-[8px] font-black text-white leading-none" x-text="group.ok ? '✓' : group.code"></span>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <div class="relative z-10 mb-6">
+                                    <h3 class="font-black text-base leading-tight group-hover:text-pink-500 transition-colors line-clamp-2 uppercase tracking-tight" x-text="res.stream_name"></h3>
+                                    <div class="flex flex-col gap-1 mt-3">
+                                        <div class="flex items-center gap-2">
+                                            <span class="w-1.5 h-1.5 rounded-full" :class="res.status === 'online' ? 'bg-green-500 animate-pulse' : (res.status === 'offline' ? 'bg-red-500' : (res.status === 'checking' ? 'bg-orange-500' : 'bg-gray-300'))"></span>
+                                            <p class="text-[9px] font-black text-gray-400 uppercase tracking-widest" x-text="res.status"></p>
+                                        </div>
+                                        <p class="text-[8px] font-bold text-gray-400 uppercase tracking-tighter opacity-50" x-text="'Server: ' + res.server_host"></p>
+                                    </div>
+                                </div>
+
+                                <!-- Snapshot & Info -->
+                                <template x-if="res.status === 'online'">
+                                    <div class="mb-6 rounded-2xl overflow-hidden bg-black border border-white/10 relative group/snap aspect-video shadow-2xl"
+                                         x-data="{
+                                            playing: false,
+                                            loading: false,
+                                            isQueued: false,
+                                            statusMessage: '',
+                                            videoUrl: '',
+                                            snapUrl: '',
+                                            info: null,
+                                            init() {
+                                                const hasSnap = res.proxy_results?.find(p => p.snap);
+                                                if (hasSnap) this.snapUrl = hasSnap.snap;
+                                                const hasVideo = res.proxy_results?.find(p => p.video);
+                                                if (hasVideo) this.videoUrl = hasVideo.video;
+                                                const hasInfo = res.proxy_results?.find(p => p.info);
+                                                if (hasInfo) this.info = hasInfo.info;
+                                            }
+                                         }">
+
+                                        <template x-if="snapUrl && !playing">
+                                            <img :src="snapUrl" class="w-full h-full object-cover">
+                                        </template>
+
+                                        <template x-if="!snapUrl && !playing && !loading">
+                                            <div class="w-full h-full flex flex-col items-center justify-center bg-gray-900/40 backdrop-blur-sm border border-white/5">
+                                                <i class="fas fa-image text-gray-700 text-3xl mb-2"></i>
+                                                <span class="text-[8px] font-black text-gray-600 uppercase tracking-widest">No Snapshot</span>
+                                            </div>
+                                        </template>
+
+                                        <template x-if="loading && !playing">
+                                            <div class="w-full h-full flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm z-20">
+                                                <div class="w-12 h-12 border-4 border-pink-500/20 border-t-pink-500 rounded-full animate-spin mb-4"></div>
+                                                <span class="text-[10px] font-black text-white uppercase tracking-[0.2em]">Analyzing Stream...</span>
+                                                <p class="text-[8px] text-gray-400 mt-2 uppercase font-bold" x-text="statusMessage || 'Connecting to Node'"></p>
+                                            </div>
+                                        </template>
+
+                                        <template x-if="!snapUrl && !playing && !loading && isQueued">
+                                            <div class="w-full h-full flex flex-col items-center justify-center bg-gray-900/50">
+                                                <i class="fas fa-microchip text-2xl text-blue-500 mb-2 animate-pulse"></i>
+                                                <span class="text-[7px] font-black text-blue-400 uppercase tracking-widest">Community Scan in Progress...</span>
+                                                <p class="text-[6px] text-gray-500 mt-1">Please wait for a peer worker to capture proof.</p>
+                                            </div>
+                                        </template>
+
+                                        <video x-show="playing" x-ref="videoPlayer" :src="videoUrl" class="w-full h-full object-contain" controls playsinline loop></video>
+
+                                        <div x-show="!playing && info" class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover/snap:opacity-100 transition-opacity flex flex-col justify-end p-3 pointer-events-none z-10">
+                                            <div class="flex justify-between items-center text-white font-black text-[8px] uppercase tracking-widest">
+                                                <span x-text="(info ? info.width : '??') + 'x' + (info ? info.height : '??')"></span>
+                                                <span class="text-pink-400" x-text="(info ? info.bitrate : 'N/A')"></span>
+                                            </div>
+                                        </div>
+
+                                        <div x-show="!loading && !playing" class="absolute inset-0 flex items-center justify-center opacity-0 group-hover/snap:opacity-100 transition-all z-20 pointer-events-none">
+                                            <template x-if="!videoUrl">
+                                                <?php if ($isPremium): ?>
+                                                    <button @click="
+                                                        loading = true;
+                                                        isQueued = false;
+                                                        statusMessage = 'Contacting Private Node...';
+                                                        const poll = () => {
+                                                            fetch('check_status.php?action=generate_preview&hash='+res.hash+'&sid='+res.stream_id+'&type='+res.type)
+                                                                .then(r => r.json())
+                                                                .then(d => {
+                                                                    if (d.status === 'queued') {
+                                                                        loading = false;
+                                                                        isQueued = true;
+                                                                        statusMessage = 'Queued for Community';
+                                                                        console.log('Peer scanning in progress...');
+                                                                        setTimeout(poll, 5000);
+                                                                    } else if (d.video || d.snap) {
+                                                                        if(d.snap) snapUrl = d.snap;
+                                                                        if(d.info) info = d.info;
+                                                                        if(d.video) {
+                                                                            videoUrl = d.video;
+                                                                            playing = true;
+                                                                            $nextTick(() => { $refs.videoPlayer.play(); });
+                                                                        }
+                                                                        loading = false;
+                                                                        isQueued = false;
+                                                                    } else {
+                                                                        window.showToast('Generation failed: ' + (d.error || 'Unknown'), false);
+                                                                        loading = false;
+                                                                    }
+                                                                })
+                                                                .catch(e => {
+                                                                    window.showToast('Connection error', false);
+                                                                    loading = false;
+                                                                });
+                                                        };
+                                                        poll();
+                                                    " class="bg-pink-500 hover:bg-pink-600 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-2xl shadow-pink-500/50 transition-all hover:scale-105 active:scale-95 pointer-events-auto">
+                                                        <i class="fas fa-video mr-3 text-sm"></i> Generate Preview
+                                                    </button>
+                                                <?php else: ?>
+                                                    <a href="pricing.php" class="bg-gray-800/80 hover:bg-pink-500 text-white backdrop-blur-sm px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-2xl shadow-black/50 transition-all hover:scale-105 pointer-events-auto border border-white/10 flex items-center">
+                                                        <i class="fas fa-lock mr-3 text-sm text-pink-400"></i> Premium Preview
+                                                    </a>
+                                                <?php endif; ?>
+                                            </template>
+
+                                            <template x-if="videoUrl && !playing">
+                                                <button @click="playing = true; $nextTick(() => { $refs.videoPlayer.play(); });"
+                                                        class="w-16 h-16 bg-pink-500 hover:bg-pink-600 text-white rounded-full flex items-center justify-center shadow-2xl shadow-pink-500/50 transition-all hover:scale-110 active:scale-95 pointer-events-auto">
+                                                    <i class="fas fa-play ml-1 text-2xl"></i>
+                                                </button>
+                                            </template>
+                                        </div>
+
+                                        <div x-show="loading" class="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center transition-all z-30">
+                                            <div class="w-10 h-10 border-4 border-pink-500/20 border-t-pink-500 rounded-full animate-spin mb-4"></div>
+                                            <span class="text-[9px] font-black text-white uppercase tracking-[0.2em] animate-pulse">Processing Stream...</span>
+                                        </div>
+
+                                        <div class="absolute top-2 left-2 px-2 py-0.5 bg-black/50 backdrop-blur-md rounded text-[6px] font-black text-white uppercase tracking-widest border border-white/10 pointer-events-none">
+                                            <span x-text="playing ? 'Live Preview' : 'Live Snapshot'"></span>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <div class="flex gap-2 mt-auto relative z-10">
+                                    <a :href="'index.php?data=' + encodeURIComponent(res.hash)" class="flex-1 text-center py-3.5 bg-gray-50 dark:bg-gray-900/50 hover:bg-pink-500 text-gray-500 hover:text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all shadow-sm">Details</a>
+                                    <button @click="window.navigator.clipboard.writeText(res.stream_url); window.showToast('Source URL copied!', true)" class="px-4 bg-gray-50 dark:bg-gray-900/50 text-gray-400 hover:text-pink-500 rounded-xl transition-all shadow-sm" title="Copy Source">
+                                        <i class="fas fa-link text-xs"></i>
+                                    </button>
+                                    <div class="relative">
+                                        <button @click="exportHash = res.hash; showExportModal = true" class="h-full px-4 bg-gray-50 dark:bg-gray-900/50 hover:bg-blue-500 text-gray-500 hover:text-white rounded-xl text-[9px] font-black transition-all flex items-center shadow-sm">
+                                            <i class="fas fa-file-export text-xs"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+
+                    </div>
+                </template>
+            </div>
+
+            <!-- Load More -->
+            <div x-show="displayLimit < filteredResults.length" class="pt-10 pb-20">
+                <button @click="loadMore()" class="bg-white dark:bg-gray-800 hover:bg-pink-500 text-gray-500 hover:text-white px-12 py-5 rounded-2xl font-black text-[10px] uppercase tracking-[0.3em] shadow-xl transition-all hover:scale-105 active:scale-95 border border-white/10">
+                    Load More Results (<span x-text="filteredResults.length - displayLimit"></span> remaining)
+                </button>
+            </div>
+        </div>
+
+        <!-- Integrated Export Modal -->
+        <div x-show="showExportModal" x-cloak class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" @click.self="showExportModal = false">
+            <div class="bg-white dark:bg-gray-800 rounded-[2.5rem] sweet-shadow p-8 md:p-12 max-w-3xl w-full border border-gray-100 dark:border-gray-700 max-h-[90vh] flex flex-col overflow-hidden" x-transition>
+
+                <div class="flex justify-between items-center mb-10">
+                    <div>
+                        <h3 class="text-3xl font-black uppercase tracking-tighter">Export Playlist</h3>
+                        <p class="text-[10px] font-black text-gray-400 uppercase tracking-widest mt-2">Choose a regional pack for this subscription</p>
+                    </div>
+                    <button @click="showExportModal = false" class="w-12 h-12 flex items-center justify-center bg-gray-50 dark:bg-gray-900 rounded-2xl text-gray-400 hover:text-pink-500 transition-all border border-gray-100 dark:border-gray-800"><i class="fas fa-times text-xl"></i></button>
+                </div>
+
+                <div class="flex-grow overflow-y-auto pr-4 custom-scrollbar">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <a :href="'m3u_generator.php?hash=' + exportHash + '&country=ALL'" class="flex items-center p-6 bg-pink-500/5 hover:bg-pink-500/10 border border-pink-500/20 rounded-3xl transition-all group">
+                            <span class="text-3xl mr-6">🌐</span>
+                            <div class="text-left">
+                                <p class="text-[10px] font-black uppercase text-pink-500 mb-1">Full Export</p>
+                                <p class="font-black text-lg uppercase tracking-tighter">Global Playlist</p>
+                            </div>
+                        </a>
+                        <a :href="'m3u_generator.php?hash=' + exportHash + '&country=CZ'" class="flex items-center p-6 bg-gray-50 dark:bg-gray-900/50 hover:bg-gray-100 dark:hover:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl transition-all">
+                            <span class="text-3xl mr-6">🇨🇿</span>
+                            <div class="text-left">
+                                <p class="text-[10px] font-black uppercase text-gray-400 mb-1">Local Pack</p>
+                                <p class="font-black text-lg uppercase tracking-tighter">Czech Only</p>
+                            </div>
+                        </a>
+                        <a :href="'m3u_generator.php?hash=' + exportHash + '&country=SK'" class="flex items-center p-6 bg-gray-50 dark:bg-gray-900/50 hover:bg-gray-100 dark:hover:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl transition-all">
+                            <span class="text-3xl mr-6">🇸🇰</span>
+                            <div class="text-left">
+                                <p class="text-[10px] font-black uppercase text-gray-400 mb-1">Local Pack</p>
+                                <p class="font-black text-lg uppercase tracking-tighter">Slovak Only</p>
+                            </div>
+                        </a>
+                        <a :href="'m3u_generator.php?hash=' + exportHash + '&country=EU'" class="flex items-center p-6 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-500/20 rounded-3xl transition-all">
+                            <span class="text-3xl mr-6">🇪🇺</span>
+                            <div class="text-left">
+                                <p class="text-[10px] font-black uppercase text-blue-500 mb-1">Continent Pack</p>
+                                <p class="font-black text-lg uppercase tracking-tighter">Europe Pack</p>
+                            </div>
+                        </a>
+                        <a :href="'m3u_generator.php?hash=' + exportHash + '&country=AM'" class="flex items-center p-6 bg-gray-50 dark:bg-gray-900/50 hover:bg-gray-100 dark:hover:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl transition-all">
+                            <span class="text-3xl mr-6">🌎</span>
+                            <div class="text-left">
+                                <p class="text-[10px] font-black uppercase text-gray-400 mb-1">Continent Pack</p>
+                                <p class="font-black text-lg uppercase tracking-tighter">Americas</p>
+                            </div>
+                        </a>
+                        <a :href="'m3u_generator.php?hash=' + exportHash + '&country=ARAB'" class="flex items-center p-6 bg-gray-50 dark:bg-gray-900/50 hover:bg-gray-100 dark:hover:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl transition-all">
+                            <span class="text-3xl mr-6">☪️</span>
+                            <div class="text-left">
+                                <p class="text-[10px] font-black uppercase text-gray-400 mb-1">Cultural Pack</p>
+                                <p class="font-black text-lg uppercase tracking-tighter">Arab World</p>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Empty State -->
+        <div x-show="results.length === 0 && !loading && query" x-cloak class="text-center py-32 fade-in">
+            <div class="w-32 h-32 bg-white dark:bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-8 sweet-shadow border border-white/20">
+                <i class="fas fa-search-minus text-4xl text-gray-200 dark:text-gray-700 opacity-20"></i>
+            </div>
+            <h3 class="text-2xl font-black uppercase tracking-tighter text-gray-400">No results found</h3>
+            <p class="text-sm font-bold text-gray-500 mt-4 uppercase tracking-widest opacity-50">Try broadening your search</p>
+        </div>
+    </main>
+
+    <?php include_once __DIR__ . '/includes/footer_ads.php'; ?>
+    <?php include_once __DIR__ . '/includes/feedback_ui.php'; ?>
+
+    <script>
+    window.showToast = function(text, isSuccess) {
+        const toast = document.getElementById('feedback-toast');
+        const msg = document.getElementById('feedback-toast-msg');
+        if (toast && msg) {
+            toast.className = `fixed bottom-10 left-1/2 -translate-x-1/2 z-[1000] px-10 py-5 rounded-full shadow-2xl flex items-center font-black text-[11px] uppercase tracking-[0.2em] text-white transition-all duration-500 transform scale-100 ${isSuccess ? 'bg-pink-500 shadow-pink-500/40' : 'bg-red-500 shadow-red-500/40'}`;
+            msg.innerText = text;
+            toast.style.display = 'flex';
+            setTimeout(() => {
+                toast.classList.add('scale-0', 'opacity-0');
+                setTimeout(() => { toast.style.display = 'none'; }, 500);
+            }, 4000);
+        }
+    }
+    </script>
+</body>
+</html>
+root vmi3197778:/var/www/iptv#

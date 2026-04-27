@@ -66,7 +66,7 @@ func startProducer(s *Stream) {
 			args := []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
 
 			if isFallback {
-				args = append(args, "-stream_loop", "-1", "-re")
+				args = append(args, "-stream_loop", "-1")
 			} else {
 				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
 			}
@@ -171,8 +171,8 @@ func startProducer(s *Stream) {
 					if firstChunk {
 						preWinnerChunks = append(preWinnerChunks, chunk)
 						
-						// Declare winner after receiving 256KB
-						if localBytes > 262144 {
+						// Declare winner after receiving 64KB (Faster start)
+						if localBytes > 65536 {
 							firstChunk = false
 							log.Printf("Source #%d (%s) works! Promoting to active stream for %s", idx, srcUrl, s.Key)
 							s.CurrentProcessStart = time.Now()

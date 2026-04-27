@@ -1,29 +1,30 @@
 package main
 
 import (
-	"bufio"
+	"context"
+	"io"
 	"log"
 	"math/rand"
-	"os/exec"
+	"net/http"
 	"sync"
 	"time"
 )
 
 type Stream struct {
-	Key           string
-	Urls          []string
-	Clients       map[chan []byte]bool
-	Mu            sync.RWMutex
-	Proc          *exec.Cmd
-	LastDataTime  time.Time
-	Created       time.Time
-	OnFallback    bool
-	CurrentUrlIdx int
-	Active        bool
-	LastRetry     time.Time
+	Key                 string
+	Urls                []string
+	Clients             map[chan []byte]bool
+	Mu                  sync.RWMutex
+	CancelFunc          context.CancelFunc
+	LastDataTime        time.Time
+	Created             time.Time
+	OnFallback          bool
+	CurrentUrlIdx       int
+	Active              bool
+	LastRetry           time.Time
 	CurrentBytesRead    int64
 	CurrentProcessStart time.Time
-	CurrentBitrate      float64 // In Mbps
+	CurrentBitrate      float64
 }
 
 func shuffle(urls []string) {
@@ -44,7 +45,7 @@ func startProducer(s *Stream) {
 	copy(urls, s.Urls)
 	s.Mu.Unlock()
 
-	log.Printf("Starting stable producer (Sequential): %s", s.Key)
+	log.Printf("Starting stable producer (Pure HTTP): %s", s.Key)
 
 	for {
 		s.Mu.RLock()
@@ -59,75 +60,68 @@ func startProducer(s *Stream) {
 			s.CurrentUrlIdx = idx
 			s.Mu.Unlock()
 
-			isFallback := (srcUrl == FallbackURL)
-			// Use a high-quality User-Agent consistent across all requests
-			ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-			
-			args := []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
-
-			if isFallback {
-				args = append(args, "-stream_loop", "-1")
-			} else {
-				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
+			userAgents := []string{
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+				"Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 234 Safari/533.3",
+				"Enigma2 HbbTV/1.1.1 (+PVR+RTSP+DL;openATV;;;)",
+				"TiviMate/4.7.0 (Linux; Android 11)",
+				"IPTVSmartersPro",
+				"VLC/3.0.18 LibVLC/3.0.18",
+				"Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.2 Chrome/63.0.3239.111 TV Safari/537.36",
 			}
+			ua := userAgents[rand.Intn(len(userAgents))]
 
-			// Optimization: Very high probe size to handle provider jitter
-			args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
-			args = append(args, "-fflags", "+genpts+igndts")
-			args = append(args, "-i", srcUrl)
-
-			args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")
-			args = append(args, "-c", "copy")
-			args = append(args, "-bsf:v", "dump_extra=freq=all")
-			args = append(args, "-max_interleave_delta", "0", "-max_muxing_queue_size", "1024")
-			args = append(args, "-avoid_negative_ts", "make_zero")
-
-			// Critical: Always use -copyts when provider timestamps are corrected
-			args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "-copyts", "pipe:1")
-			
-			cmd := exec.Command("ffmpeg", args...)
-			stdout, err := cmd.StdoutPipe()
-			if err != nil { continue }
-			stderr, _ := cmd.StderrPipe()
-
-			if err := cmd.Start(); err != nil {
-				continue
-			}
-
-			// Error logging
-			go func(c *exec.Cmd, streamKey string) {
-				scanner := bufio.NewScanner(stderr)
-				for scanner.Scan() {
-					s.Mu.RLock()
-					proc := s.Proc
-					s.Mu.RUnlock()
-					if proc == c {
-						log.Printf("FFmpeg Error [%s]: %s", streamKey, scanner.Text())
-					}
-				}
-			}(cmd, s.Key)
-
+			ctx, cancel := context.WithCancel(context.Background())
 			s.Mu.Lock()
-			s.Proc = cmd
+			if s.CancelFunc != nil {
+				s.CancelFunc()
+			}
+			s.CancelFunc = cancel
 			s.LastDataTime = time.Now()
 			s.CurrentBytesRead = 0
 			s.Mu.Unlock()
 
+			req, err := http.NewRequestWithContext(ctx, "GET", srcUrl, nil)
+			if err != nil {
+				cancel()
+				continue
+			}
+			req.Header.Set("User-Agent", ua)
+
+			client := &http.Client{}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Printf("Failed to fetch source #%d [%s]: %v", idx, s.Key, err)
+				cancel()
+				continue
+			}
+
+			if resp.StatusCode != 200 {
+				log.Printf("Source #%d [%s] returned HTTP %d", idx, s.Key, resp.StatusCode)
+				resp.Body.Close()
+				cancel()
+				continue
+			}
+
 			// Monitoring goroutine
-			go func(c *exec.Cmd) {
+			go func(checkCtx context.Context) {
 				lastBytes := int64(0)
 				lastCheck := time.Now()
 				lowDataTicks := 0
 				
 				for {
+					select {
+					case <-checkCtx.Done():
+						return
+					case <-time.After(2 * time.Second):
+					}
+
 					s.Mu.RLock()
-					active := s.Active
-					proc := s.Proc
 					currentBytes := s.CurrentBytesRead
+					lastDataTime := s.LastDataTime
 					s.Mu.RUnlock()
 
-					if !active || proc != c { break }
-					
 					now := time.Now()
 					diffBytes := currentBytes - lastBytes
 					lastBytes = currentBytes
@@ -141,25 +135,21 @@ func startProducer(s *Stream) {
 					
 					if diffBytes < 30000 { lowDataTicks++ } else { lowDataTicks = 0 }
 					
-					if time.Since(s.LastDataTime) > DataTimeout || lowDataTicks > 15 {
-						log.Printf("DataTimeout [%s]: FFmpeg frozen/low bitrate, killing attempt.", s.Key)
-						if c.Process != nil {
-							c.Process.Kill()
-						}
+					if time.Since(lastDataTime) > DataTimeout || lowDataTicks > 15 {
+						log.Printf("DataTimeout [%s]: Stream frozen/low bitrate, killing attempt.", s.Key)
+						cancel()
 						break
 					}
 					lastCheck = now
-					time.Sleep(2 * time.Second)
 				}
-			}(cmd)
+			}(ctx)
 
 			buf := make([]byte, FfmpegBuffer)
 			firstChunk := true
 			var localBytes int64
-			var preWinnerChunks [][]byte
 
 			for {
-				n, err := stdout.Read(buf)
+				n, err := resp.Body.Read(buf)
 				if n > 0 {
 					chunk := make([]byte, n)
 					copy(chunk, buf[:n])
@@ -169,24 +159,11 @@ func startProducer(s *Stream) {
 					s.LastDataTime = time.Now()
 					
 					if firstChunk {
-						preWinnerChunks = append(preWinnerChunks, chunk)
-						
-						// Declare winner after receiving 64KB (Faster start)
-						if localBytes > 65536 {
+						if localBytes > 32768 {
 							firstChunk = false
 							log.Printf("Source #%d (%s) works! Promoting to active stream for %s", idx, srcUrl, s.Key)
 							s.CurrentProcessStart = time.Now()
 							s.CurrentBytesRead = localBytes
-							
-							for _, c := range preWinnerChunks {
-								for ch := range s.Clients {
-									select {
-									case ch <- c:
-									default:
-									}
-								}
-							}
-							preWinnerChunks = nil // free memory
 						}
 					} else {
 						s.CurrentBytesRead += int64(n)
@@ -201,7 +178,9 @@ func startProducer(s *Stream) {
 				}
 				
 				if err != nil {
-					log.Printf("Source #%d [%s] died: %v", idx, s.Key, err)
+					if err != io.EOF && err != context.Canceled {
+						log.Printf("Source #%d [%s] died: %v", idx, s.Key, err)
+					}
 					break
 				}
 				
@@ -211,11 +190,8 @@ func startProducer(s *Stream) {
 				if !active { break }
 			}
 
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-			}
-			cmd.Wait()
-			stdout.Close()
+			resp.Body.Close()
+			cancel()
 			
 			s.Mu.RLock()
 			if !s.Active {
@@ -236,7 +212,10 @@ func startProducer(s *Stream) {
 	}
 
 	s.Mu.Lock()
-	s.Proc = nil
+	if s.CancelFunc != nil {
+		s.CancelFunc()
+	}
+	s.CancelFunc = nil
 	s.Active = false
 	s.Mu.Unlock()
 }
@@ -256,8 +235,8 @@ func cleanupStream(key string) {
 	}
 
 	s.Active = false
-	if s.Proc != nil && s.Proc.Process != nil {
-		s.Proc.Process.Kill()
+	if s.CancelFunc != nil {
+		s.CancelFunc()
 	}
 	delete(streams, key)
 	log.Printf("Stream ended and cleaned up: %s", key)

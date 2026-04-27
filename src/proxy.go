@@ -14,18 +14,11 @@ var (
 	allowedIPsCache  = map[string]bool{}
 	lastDNSCheck     time.Time
 	dnsMutex         sync.Mutex
-	httpClient       = &http.Client{Timeout: 5 * time.Second}
+	httpClient       = &http.Client{Timeout: 10 * time.Second}
 )
 
 func checkUrlHealth(targetUrl string) bool {
 	resp, err := httpClient.Head(targetUrl)
-	if err == nil {
-		resp.Body.Close()
-		if resp.StatusCode < 400 {
-			return true
-		}
-	}
-	resp, err = httpClient.Get(targetUrl)
 	if err == nil {
 		resp.Body.Close()
 		if resp.StatusCode < 400 {
@@ -61,29 +54,12 @@ func getAllowedIPs() (map[string]bool, bool) {
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
 	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" {
-		clientIP = r.Header.Get("X-Real-IP")
-	}
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
-
-	if strings.Contains(clientIP, ",") {
-		clientIP = strings.Split(clientIP, ",")[0]
-	}
+	if clientIP == "" { clientIP = r.Header.Get("X-Real-IP") }
+	if clientIP == "" { clientIP = r.RemoteAddr }
+	if strings.Contains(clientIP, ",") { clientIP = strings.Split(clientIP, ",")[0] }
 	clientIP = strings.TrimSpace(clientIP)
-	if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 {
-		clientIP = clientIP[:colonIdx]
-	}
+	if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 { clientIP = clientIP[:colonIdx] }
 	clientIP = strings.Trim(clientIP, "[]")
-	log.Printf("Proxy Request from %s | Host: %s | UA: %s | Path: %s", clientIP, r.Host, r.UserAgent(), r.URL.Path)
-
-	allowedIPs, enforcementEnabled := getAllowedIPs()
-	if enforcementEnabled && !allowedIPs[clientIP] {
-		log.Printf("FORBIDDEN: Access denied for IP %s (not in whitelist). UA: %s", clientIP, r.UserAgent())
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.Split(path, "/")
@@ -94,37 +70,34 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	sourceID := parts[0]
 	channelID := parts[1]
-	// Clean channelID from extensions
-	channelID = strings.TrimSuffix(channelID, ".m3u8")
-	channelID = strings.TrimSuffix(channelID, ".ts")
+	// Remove ALL extensions for the key lookup
+	cleanID := channelID
+	if idx := strings.Index(cleanID, "."); idx != -1 {
+		cleanID = cleanID[:idx]
+	}
 	
-	key := fmt.Sprintf("%s:%s", sourceID, channelID)
+	key := fmt.Sprintf("%s:%s", sourceID, cleanID)
+	log.Printf("Proxy Request from %s | Key: %s | Path: %s", clientIP, key, r.URL.Path)
+
+	allowedIPs, enforcementEnabled := getAllowedIPs()
+	if enforcementEnabled && !allowedIPs[clientIP] {
+		log.Printf("FORBIDDEN: Access denied for IP %s", clientIP)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	configLock.RLock()
 	redirectMode := Config.RedirectMode
 	sourceUrls := Config.Sources[sourceID]
 	configLock.RUnlock()
 
-	// External Redirect (client -> upstream)
+	// External Bypass (302 Redirect)
 	if redirectMode && !strings.Contains(r.URL.RawQuery, "proxy=1") {
 		if len(sourceUrls) > 0 {
-			var redirectUrl string
-			for _, u := range sourceUrls {
-				if strings.HasSuffix(u, ".m3u8") {
-					redirectUrl = strings.Replace(u, "{channel_id}", channelID, -1)
-					break
-				}
-			}
-			if redirectUrl == "" {
-				redirectUrl = strings.Replace(sourceUrls[0], "{channel_id}", channelID, -1)
-			}
-
-			log.Printf("Checking health for redirect %s -> %s", key, redirectUrl)
-			if checkUrlHealth(redirectUrl) {
-				log.Printf("Redirecting %s to %s", key, redirectUrl)
-				http.Redirect(w, r, redirectUrl, http.StatusFound)
-				return
-			}
+			u := strings.Replace(sourceUrls[0], "{channel_id}", cleanID, -1)
+			log.Printf("Bypassing %s -> %s", key, u)
+			http.Redirect(w, r, u, http.StatusFound)
+			return
 		}
 	}
 
@@ -132,31 +105,32 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	s, exists := streams[key]
 	if !exists {
 		configLock.RLock()
-		sourceUrls := Config.Sources[sourceID]
 		autoFallback := Config.AutoFallback
+		fallbackMode := Config.FallbackMode
 		configLock.RUnlock()
 
 		var urls []string
-		// 1. First, use the explicitly configured URLs for this source
-		for _, u := range sourceUrls {
-			urls = append(urls, strings.Replace(u, "{channel_id}", channelID, -1))
-		}
+		if fallbackMode {
+			urls = []string{FallbackURL}
+		} else {
+			// 1. Add local sources
+			for _, u := range sourceUrls {
+				urls = append(urls, strings.Replace(u, "{channel_id}", cleanID, -1))
+			}
 
-		// 2. SMART PROXY: Lookup name and find global alternatives
-		channelNamesLock.RLock()
-		channelName := ChannelNames[key]
-		channelNamesLock.RUnlock()
-
-		if channelName != "" {
-			log.Printf("Smart Proxy: Resolved %s to '%s'. Searching global alternatives...", key, channelName)
-			alts := searchGlobalAlternatives(channelName)
-			if len(alts) > 0 {
+			// 2. Smart Proxy lookup
+			channelNamesLock.RLock()
+			name := ChannelNames[key]
+			channelNamesLock.RUnlock()
+			if name != "" {
+				log.Printf("Smart Proxy: Searching alternatives for '%s' (%s)", name, key)
+				alts := searchGlobalAlternatives(name)
 				urls = append(urls, alts...)
 			}
-		}
 
-		if autoFallback {
-			urls = append(urls, FallbackURL)
+			if autoFallback {
+				urls = append(urls, FallbackURL)
+			}
 		}
 
 		s = &Stream{Key: key, Urls: urls, Clients: make(map[chan []byte]bool), Created: time.Now(), LastDataTime: time.Now()}
@@ -170,10 +144,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()
 
-	if !exists { 
-		go startProducer(s) 
-	}
-	log.Printf("Connect: %s (Total: %d)", key, clientsCount)
+	if !exists { go startProducer(s) }
 
 	defer func() {
 		s.Mu.Lock()
@@ -183,33 +154,40 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		if clientsCount == 0 { time.AfterFunc(CleanupDelay, func() { cleanupStream(key) }) }
 	}()
 
+	// Wait for stream to become active
 	waitStart := time.Now()
 	for {
 		s.Mu.RLock()
-		hasData := s.CurrentBytesRead > 262144 // Wait for safety buffer
+		hasData := s.CurrentBytesRead > 65536
 		s.Mu.RUnlock()
-		if hasData {
-			break
-		}
+		if hasData { break }
 		if time.Since(waitStart) > 30*time.Second {
-			log.Printf("TIMEOUT: Giving up after 30s for %s (Client: %s)", key, clientIP)
-			http.Error(w, "Timeout", http.StatusGatewayTimeout)
+			http.Error(w, "Stream Timeout", http.StatusGatewayTimeout)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	hj, _ := w.(http.Hijacker)
-	conn, bufrw, _ := hj.Hijack()
+	hj, ok := w.(http.Hijacker)
+	if !ok { return }
+	conn, bufrw, err := hj.Hijack()
+	if err != nil { return }
 	defer conn.Close()
 
-	// Tell the player it's MPEG-TS data
 	bufrw.WriteString("HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nConnection: keep-alive\r\n\r\n")
 	bufrw.Flush()
 
+	var lastWrite time.Time
 	for {
 		select {
 		case chunk := <-clientChan:
+			// Burst pacing: limit speed to ~8-16 MB/s to prevent TVHeadend from choking on initial bursts
+			elapsed := time.Since(lastWrite)
+			if elapsed < 2 * time.Millisecond {
+				time.Sleep((2 * time.Millisecond) - elapsed)
+			}
+			lastWrite = time.Now()
+
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := conn.Write(chunk); err != nil { return }
 		case <-time.After(60 * time.Second):

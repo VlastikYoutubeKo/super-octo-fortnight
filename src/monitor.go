@@ -1,15 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-    "math/rand"
-    "encoding/json"
-    "fmt"
-    "os"
 )
 
 func checkSourceHealth(testUrl string) bool {
@@ -87,19 +87,19 @@ func restartStreamWithSource(key string, sourceIdx int) bool {
 	s.Urls = newUrls
 	s.OnFallback = false
 	s.LastRetry = time.Now()
-    
-    var procToKill *os.Process
-    if s.Proc != nil && s.Proc.Process != nil {
-        procToKill = s.Proc.Process
-    }
-    s.Proc = nil
+
+	var cancelFunc context.CancelFunc
+	if s.CancelFunc != nil {
+		cancelFunc = s.CancelFunc
+	}
+	s.CancelFunc = nil
 
 	s.Mu.Unlock()
 	streamsLock.Unlock()
 
-    if procToKill != nil {
-        procToKill.Kill()
-    }
+	if cancelFunc != nil {
+		cancelFunc()
+	}
 
 	log.Printf("Recovering %s - switching from fallback to source", key)
 	return true

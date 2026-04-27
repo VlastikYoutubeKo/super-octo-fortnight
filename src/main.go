@@ -69,9 +69,9 @@ var (
 const (
 	ProxyPort           = 9000
 	APIPort             = 9005
-	FfmpegBuffer        = 65536 // 64KB
-	BufferQueueSize     = 5000
-	DataTimeout         = 30 * time.Second
+	FfmpegBuffer        = 16384 // 16KB
+	BufferQueueSize     = 2000
+	DataTimeout         = 60 * time.Second
 	CleanupDelay        = 10 * time.Second
 	StartupTimeout      = 30 * time.Second
 	SourceRetryInterval = 60 * time.Second
@@ -122,13 +122,13 @@ func main() {
 	}()
 
 	<-stop
-	log.Println("\nShutting down... cleaning up active ffmpeg streams...")
+	log.Println("\nShutting down... cleaning up active pure HTTP streams...")
 	streamsLock.Lock()
 	for key, stream := range streams {
 		stream.Mu.Lock()
-		if stream.Proc != nil && stream.Proc.Process != nil {
-			log.Printf("Killing ffmpeg for stream: %s", key)
-			stream.Proc.Process.Kill()
+		if stream.CancelFunc != nil {
+			log.Printf("Stopping pure HTTP stream: %s", key)
+			stream.CancelFunc()
 		}
 		stream.Mu.Unlock()
 	}

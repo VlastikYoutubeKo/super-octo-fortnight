@@ -37,7 +37,6 @@ func setupAPIRoutes(mux *http.ServeMux) {
 			onFallback := s.OnFallback
 			age := time.Since(s.Created).Seconds()
 			lastRetry := s.LastRetry
-			bufferSize := len(s.RecentChunks)
 
 			bytesRead := s.CurrentBytesRead
 			processAge := time.Since(s.CurrentProcessStart).Seconds()
@@ -65,7 +64,6 @@ func setupAPIRoutes(mux *http.ServeMux) {
 			streamList = append(streamList, map[string]interface{}{
 				"key":         key,
 				"clients":     clients,
-			"queue_size":  bufferSize,
 				"age":         int(age),
 				"url":         urlStr,
 				"on_fallback": onFallback,

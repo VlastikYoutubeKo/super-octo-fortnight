@@ -13,7 +13,6 @@ type Stream struct {
 	Key           string
 	Urls          []string
 	Clients       map[chan []byte]bool
-	RecentChunks  [][]byte
 	Mu            sync.RWMutex
 	Proc          *exec.Cmd
 	LastDataTime  time.Time
@@ -105,7 +104,6 @@ func startProducer(s *Stream) {
 			s.Proc = cmd
 			s.LastDataTime = time.Now()
 			s.CurrentBytesRead = 0
-			s.RecentChunks = nil
 			s.Mu.Unlock()
 
 			// Monitoring goroutine
@@ -172,7 +170,6 @@ func startProducer(s *Stream) {
 							log.Printf("Source #%d (%s) works! Promoting to active stream for %s", idx, srcUrl, s.Key)
 							s.CurrentProcessStart = time.Now()
 							s.CurrentBytesRead = localBytes
-							s.RecentChunks = preWinnerChunks
 							
 							for _, c := range preWinnerChunks {
 								for ch := range s.Clients {
@@ -186,8 +183,6 @@ func startProducer(s *Stream) {
 						}
 					} else {
 						s.CurrentBytesRead += int64(n)
-						s.RecentChunks = append(s.RecentChunks, chunk)
-						if len(s.RecentChunks) > 32 { s.RecentChunks = s.RecentChunks[1:] }
 
 						for ch := range s.Clients {
 							select {

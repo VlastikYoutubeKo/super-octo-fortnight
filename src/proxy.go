@@ -169,13 +169,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	clientChan := make(chan []byte, BufferQueueSize)
 	s.Mu.Lock()
-	// Send recent chunks to new client for instant start
-	for _, chunk := range s.RecentChunks {
-		select {
-		case clientChan <- chunk:
-		default:
-		}
-	}
 	s.Clients[clientChan] = true
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()

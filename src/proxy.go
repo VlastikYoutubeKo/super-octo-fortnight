@@ -148,12 +148,12 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 					variants = append(variants, replaced)
 					variants = append(variants, strings.TrimSuffix(replaced, ".m3u8")+".ts")
 				} else if strings.HasSuffix(replaced, ".ts") {
-					variants = append(variants, strings.TrimSuffix(replaced, ".ts")+".m3u8")
 					variants = append(variants, replaced)
+					variants = append(variants, strings.TrimSuffix(replaced, ".ts")+".m3u8")
 				} else {
 					variants = append(variants, replaced)
 				}
-				// Shuffle variants of the same source slightly or keep order? Let's try m3u8 first.
+				// Try the configured format first. HLS (.m3u8) converted to TS via -c copy can cause PCR boundary jumps every 5-10s.
 				urls = append(urls, variants...)
 			}
 

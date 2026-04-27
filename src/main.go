@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,21 +19,6 @@ var defaultConfig []byte
 
 //go:embed index.html
 var defaultHTML []byte
-
-const (
-	ProxyPort           = 9000
-	APIPort             = 9005
-	FfmpegBuffer        = 65536 // 64KB
-	BufferQueueSize     = 5000
-	DataTimeout         = 30 * time.Second
-	CleanupDelay        = 10 * time.Second
-	StartupTimeout      = 30 * time.Second
-	SourceRetryInterval = 60 * time.Second
-	SourceCheckTimeout  = 15 * time.Second
-	TVHCheckInterval    = 3 * time.Second
-	TVHGracePeriod      = 10 * time.Second
-	FallbackURL         = "https://theariatv.github.io/channeldead.mp4"
-)
 
 type TVHConfig struct {
 	URL      string `json:"url"`
@@ -65,151 +49,79 @@ type AppConfig struct {
 }
 
 var (
-	configFilePath string
-	Config         AppConfig
-	configLock     sync.RWMutex
-
-	streams     = make(map[string]*Stream)
-	streamsLock sync.RWMutex
-	startTime   = time.Now()
+	Config       AppConfig
+	configLock   sync.RWMutex
+	streams      = make(map[string]*Stream)
+	streamsLock  sync.RWMutex
+	startTime    time.Time
+	
+	// Global Channel Name Cache (SourceID:ChannelID -> Name)
+	ChannelNames     = make(map[string]string)
+	channelNamesLock sync.RWMutex
 
 	cooldowns     = make(map[string]time.Time)
 	cooldownsLock sync.RWMutex
-    
-    scriptDir string
+
+	configFilePath string
+	scriptDir      string
 )
 
-func init() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-    ex, err := os.Executable()
-    if err != nil {
-        scriptDir = "."
-    } else {
-        scriptDir = filepath.Dir(ex)
-    }
-}
-
-func getProxies() []string {
-    configLock.RLock()
-    defer configLock.RUnlock()
-    if len(Config.Proxies) > 0 {
-        return Config.Proxies
-    }
-    return Config.Ppproxies
-}
-
-func loadConfig() {
-	// Create index.html from embedded example if it doesn't exist
-	if _, err := os.Stat("index.html"); os.IsNotExist(err) {
-		log.Printf("index.html not found, creating a new one from template")
-		if err := os.WriteFile("index.html", defaultHTML, 0644); err != nil {
-			log.Printf("Warning: Failed to create default index.html: %v", err)
-		}
-	}
-
-	configFilePath = filepath.Join("..", "config.json")
-	if _, err := os.Stat("config.json"); err == nil {
-		configFilePath = "config.json"
-	} else if os.IsNotExist(err) {
-		// Create config.json from embedded example
-		log.Printf("config.json not found, creating a new one from template")
-		if err := os.WriteFile("config.json", defaultConfig, 0644); err != nil {
-			log.Printf("Warning: Failed to create default config.json: %v", err)
-		} else {
-			configFilePath = "config.json"
-		}
-	}
-
-	data, err := os.ReadFile(configFilePath)
-	if err != nil {
-		log.Printf("Warning: Could not read config file %s: %v", configFilePath, err)
-        configLock.Lock()
-        Config.AutoFallback = true
-        Config.Sources = make(map[string][]string)
-        Config.XtreamProviders = make(map[string]Provider)
-        configLock.Unlock()
-		return
-	}
-
-    var newConfig AppConfig
-	if err := json.Unmarshal(data, &newConfig); err != nil {
-		log.Printf("Error: Failed to parse config JSON: %v", err)
-	} else {
-        configLock.Lock()
-        if newConfig.Sources == nil {
-            newConfig.Sources = make(map[string][]string)
-        }
-        if newConfig.XtreamProviders == nil {
-            newConfig.XtreamProviders = make(map[string]Provider)
-        }
-        if newConfig.AllowedIPs == nil {
-            newConfig.AllowedIPs = make([]string, 0)
-        }
-        if newConfig.AllowedDomains == nil {
-            newConfig.AllowedDomains = make([]string, 0)
-        }
-        Config = newConfig
-        configLock.Unlock()
-		log.Printf("Loaded config successfully. AutoFallback: %v, Sources: %d", Config.AutoFallback, len(Config.Sources))
-	}
-    detectXtream()
-    saveConfig()
-}
-
-func saveConfig() {
-    configLock.RLock()
-    data, err := json.MarshalIndent(Config, "", "  ")
-    configLock.RUnlock()
-    
-    if err != nil {
-        log.Printf("Failed to marshal config: %v", err)
-        return
-    }
-    
-    if err := os.WriteFile(configFilePath, data, 0644); err != nil {
-        log.Printf("Failed to save config: %v", err)
-    } else {
-        log.Printf("Config saved to %s", configFilePath)
-    }
-}
+const (
+	ProxyPort           = 9000
+	APIPort             = 9005
+	FfmpegBuffer        = 65536 // 64KB
+	BufferQueueSize     = 5000
+	DataTimeout         = 30 * time.Second
+	CleanupDelay        = 10 * time.Second
+	StartupTimeout      = 30 * time.Second
+	SourceRetryInterval = 60 * time.Second
+	SourceCheckTimeout  = 15 * time.Second
+	TVHCheckInterval    = 3 * time.Second
+	FallbackURL         = "https://theariatv.github.io/channeldead.mp4"
+    TVHGracePeriod      = 30 * time.Second
+)
 
 func main() {
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Println("IPTV Stream Proxy Manager (Go Production)")
-	fmt.Println(strings.Repeat("=", 60))
+	startTime = time.Now()
+	exePath, _ := os.Executable()
+	scriptDir = filepath.Dir(exePath)
+	configFilePath = filepath.Join(scriptDir, "config.json")
 
 	loadConfig()
+	detectXtream()
+	
+	// Start background channel name refresher
+	go refreshChannelNamesLoop()
 
 	go monitorTVH()
 	go monitorSourceRecovery()
 
-	// Setup Proxy Server
-	proxyMux := http.NewServeMux()
-	proxyMux.HandleFunc("/", handleProxy)
-	
-	// Setup API Server
-	apiMux := http.NewServeMux()
-    setupAPIRoutes(apiMux)
+	mux := http.NewServeMux()
+	setupAPIRoutes(mux)
 
 	go func() {
 		log.Printf("API running on :%d", APIPort)
-		if err := http.ListenAndServe(fmt.Sprintf(":%d", APIPort), apiMux); err != nil {
-			log.Fatalf("API server failed: %v", err)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", APIPort), mux); err != nil {
+			log.Fatalf("API failed: %v", err)
 		}
 	}()
+
+	log.Printf("Proxy running on :%d", ProxyPort)
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", ProxyPort),
+		Handler: http.HandlerFunc(handleProxy),
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("Proxy running on :%d", ProxyPort)
-		if err := http.ListenAndServe(fmt.Sprintf(":%d", ProxyPort), proxyMux); err != nil {
-			log.Fatalf("Proxy server failed: %v", err)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Proxy failed: %v", err)
 		}
 	}()
 
-	// QoL: Graceful Shutdown
-	stopChan := make(chan os.Signal, 1)
-	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
-	<-stopChan
-
+	<-stop
 	log.Println("\nShutting down... cleaning up active ffmpeg streams...")
 	streamsLock.Lock()
 	for key, stream := range streams {
@@ -222,4 +134,47 @@ func main() {
 	}
 	streamsLock.Unlock()
 	log.Println("Cleanup complete. Goodbye!")
+}
+
+func loadConfig() {
+	if _, err := os.Stat(configFilePath); os.IsNotExist(err) {
+		log.Println("config.json not found, creating from example...")
+		os.WriteFile(configFilePath, defaultConfig, 0644)
+	}
+
+	file, err := os.ReadFile(configFilePath)
+	if err != nil {
+		log.Fatalf("Failed to read config: %v", err)
+	}
+
+	configLock.Lock()
+	if err := json.Unmarshal(file, &Config); err != nil {
+		log.Fatalf("Failed to parse config: %v", err)
+	}
+	configLock.Unlock()
+	log.Printf("Loaded config successfully. AutoFallback: %v, Sources: %d", Config.AutoFallback, len(Config.Sources))
+}
+
+func saveConfig() {
+	configLock.RLock()
+	data, err := json.MarshalIndent(Config, "", "  ")
+	configLock.RUnlock()
+	if err != nil {
+		log.Printf("Failed to marshal config: %v", err)
+		return
+	}
+	if err := os.WriteFile(configFilePath, data, 0644); err != nil {
+		log.Printf("Failed to save config: %v", err)
+	} else {
+		log.Printf("Config saved to config.json")
+	}
+}
+
+func getProxies() []string {
+	configLock.RLock()
+	defer configLock.RUnlock()
+	if len(Config.Ppproxies) > 0 {
+		return Config.Ppproxies
+	}
+	return Config.Proxies
 }

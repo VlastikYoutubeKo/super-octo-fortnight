@@ -164,6 +164,20 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 				urls = append(urls, variants...)
 			}
 
+			// SMART PROXY: Lookup name and find global alternatives
+			channelNamesLock.RLock()
+			channelName := ChannelNames[key]
+			channelNamesLock.RUnlock()
+
+			if channelName != "" {
+				log.Printf("Smart Proxy: Resolved %s to '%s'. Searching global alternatives...", key, channelName)
+				alts := searchGlobalAlternatives(channelName)
+				if len(alts) > 0 {
+					// Append alternatives before the fallback URL
+					urls = append(urls, alts...)
+				}
+			}
+
 			if autoFallback {
 				urls = append(urls, FallbackURL)
 			}
@@ -180,7 +194,9 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()
 
-	if !exists { go startProducer(s) }
+	if !exists { 
+		go startProducer(s) 
+	}
 	log.Printf("Connect: %s (Total: %d)", key, clientsCount)
 
 	defer func() {
@@ -194,13 +210,13 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	waitStart := time.Now()
 	for {
 		s.Mu.RLock()
-		hasData := s.CurrentBytesRead > 0
+		hasData := s.CurrentBytesRead > 262144 // Wait for safety buffer
 		s.Mu.RUnlock()
 		if hasData {
 			break
 		}
-		if time.Since(waitStart) > 20*time.Second {
-			log.Printf("TIMEOUT: Giving up after 20s for %s (Client: %s)", key, clientIP)
+		if time.Since(waitStart) > 30*time.Second {
+			log.Printf("TIMEOUT: Giving up after 30s for %s (Client: %s)", key, clientIP)
 			http.Error(w, "Timeout", http.StatusGatewayTimeout)
 			return
 		}
@@ -211,7 +227,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	conn, bufrw, _ := hj.Hijack()
 	defer conn.Close()
 
-	// Tell the player it's MPEG-TS data regardless of whether the URL ends in .ts or .m3u8
+	// Tell the player it's MPEG-TS data
 	bufrw.WriteString("HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nConnection: keep-alive\r\n\r\n")
 	bufrw.Flush()
 
@@ -220,7 +236,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		case chunk := <-clientChan:
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := conn.Write(chunk); err != nil { return }
-		case <-time.After(30 * time.Second):
+		case <-time.After(60 * time.Second):
 			return
 		}
 	}

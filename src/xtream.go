@@ -13,6 +13,88 @@ import (
 	"time"
 )
 
+var xtreamClient = &http.Client{
+	Timeout: 300 * time.Second,
+}
+
+func refreshChannelNamesLoop() {
+	for {
+		// Try to refresh from any available provider
+		configLock.RLock()
+		providers := make([]Provider, 0)
+		for _, p := range Config.XtreamProviders {
+			providers = append(providers, p)
+		}
+		configLock.RUnlock()
+
+		if len(providers) == 0 {
+			time.Sleep(1 * time.Minute)
+			continue
+		}
+
+		success := false
+		for _, p := range providers {
+			log.Printf("Refreshing channel names from provider: %s", p.Name)
+			names, err := fetchLiveStreams(p)
+			if err == nil && len(names) > 0 {
+				channelNamesLock.Lock()
+				for id, name := range names {
+					// We store by both key formats just in case
+					key := fmt.Sprintf("%s:%s", p.SourceID, id)
+					ChannelNames[key] = name
+				}
+				channelNamesLock.Unlock()
+				log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
+				success = true
+				break // One provider is enough for mapping
+			} else if err != nil {
+				log.Printf("Failed to refresh names from %s: %v", p.Name, err)
+			}
+			time.Sleep(2 * time.Second)
+		}
+
+		if success {
+			time.Sleep(1 * time.Hour) // Refresh every hour
+		} else {
+			time.Sleep(5 * time.Minute) // Retry sooner if all failed
+		}
+	}
+}
+
+func fetchLiveStreams(p Provider) (map[string]string, error) {
+	apiUrl := fmt.Sprintf("%s/player_api.php?username=%s&password=%s&action=get_live_streams", p.URL, p.Username, p.Password)
+	
+	req, _ := http.NewRequest("GET", apiUrl, nil)
+	// Use the same reliable User-Agent as FFmpeg
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+
+	resp, err := xtreamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var streams []struct {
+		ID   interface{} `json:"stream_id"`
+		Name string      `json:"name"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&streams); err != nil {
+		return nil, err
+	}
+
+	names := make(map[string]string)
+	for _, s := range streams {
+		idStr := fmt.Sprintf("%v", s.ID)
+		names[idStr] = s.Name
+	}
+	return names, nil
+}
+
 func parseXtream(u string) (server, port, user, password string, ok bool) {
 	re := regexp.MustCompile(`https?://([^:]+)(?::(\d+))?/(?:live|movie|series)/([^/]+)/([^/]+)/\{channel_id\}`)
 	matches := re.FindStringSubmatch(u)

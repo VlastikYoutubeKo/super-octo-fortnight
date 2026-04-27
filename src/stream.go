@@ -60,14 +60,18 @@ func startProducer(s *Stream) {
 			s.Mu.Unlock()
 
 			isFallback := (srcUrl == FallbackURL)
-			args := []string{"-hide_banner", "-loglevel", "warning", "-user_agent", "VLC/3.0.18 LibVLC/3.0.18"}
+			// Use a high-quality User-Agent consistent across all requests
+			ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+			
+			args := []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
 
 			if isFallback {
 				args = append(args, "-stream_loop", "-1", "-re")
 			} else {
-				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx")
+				args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
 			}
 
+			// Optimization: Very high probe size to handle provider jitter
 			args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
 			args = append(args, "-fflags", "+genpts+igndts")
 			args = append(args, "-i", srcUrl)
@@ -75,9 +79,12 @@ func startProducer(s *Stream) {
 			args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")
 			args = append(args, "-c", "copy")
 			args = append(args, "-bsf:v", "dump_extra=freq=all")
+			args = append(args, "-max_interleave_delta", "0", "-max_muxing_queue_size", "1024")
 			args = append(args, "-avoid_negative_ts", "make_zero")
 
-			args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "pipe:1")
+			// Critical: Always use -copyts when provider timestamps are corrected
+			args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "-copyts", "pipe:1")
+			
 			cmd := exec.Command("ffmpeg", args...)
 			stdout, err := cmd.StdoutPipe()
 			if err != nil { continue }
@@ -183,7 +190,6 @@ func startProducer(s *Stream) {
 						}
 					} else {
 						s.CurrentBytesRead += int64(n)
-
 						for ch := range s.Clients {
 							select {
 							case ch <- chunk:
@@ -217,7 +223,6 @@ func startProducer(s *Stream) {
 				break
 			}
 			s.Mu.RUnlock()
-			// Slight delay before trying next source to let network settle
 			time.Sleep(1 * time.Second)
 		}
 		

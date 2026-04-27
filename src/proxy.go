@@ -99,8 +99,17 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	configLock.RLock()
 	redirectMode := Config.RedirectMode
+	internalM3u8 := Config.InternalM3u8
 	sourceUrls := Config.Sources[sourceID]
 	configLock.RUnlock()
+
+	// Internal Redirect (.ts -> .m3u8 on this proxy)
+	isTSRequest := strings.HasSuffix(parts[1], ".ts")
+	if internalM3u8 && isTSRequest && !strings.Contains(r.URL.RawQuery, "proxy=1") {
+		log.Printf("Internal Redirect: %s.ts -> %s.m3u8", channelID, channelID)
+		http.Redirect(w, r, "http://"+r.Host+"/"+sourceID+"/"+channelID+".m3u8", http.StatusFound)
+		return
+	}
 
 	// External Redirect (client -> upstream)
 	if redirectMode && !strings.Contains(r.URL.RawQuery, "proxy=1") {
@@ -124,8 +133,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
-	// (Removed Internal Redirect .ts -> .m3u8)
 
 	streamsLock.Lock()
 	s, exists := streams[key]

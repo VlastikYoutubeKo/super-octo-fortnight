@@ -154,7 +154,8 @@ function Stats() {
     <div class="stat"><div class="stat-label">Streams</div><div class="stat-value">${S.status.total_streams}</div></div>
     <div class="stat"><div class="stat-label">Clients</div><div class="stat-value">${S.status.total_clients}</div></div>
     <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value">${uptime(S.status.uptime)}</div></div>
-    <div class="stat"><div class="stat-label">Redirect</div><div class="stat-value" style="color: ${S.status.redirect_mode ? 'var(--success)' : 'var(--text-muted)'}">${S.status.redirect_mode ? 'Active' : 'Off'}</div></div>
+    <div class="stat" title="External Bypass Redirect"><div class="stat-label">Bypass</div><div class="stat-value" style="color: ${S.status.redirect_mode ? 'var(--success)' : 'var(--text-muted)'}">${S.status.redirect_mode ? 'Active' : 'Off'}</div></div>
+    <div class="stat" title="Internal TS to M3U8 Redirect"><div class="stat-label">TS→M3U8</div><div class="stat-value" style="color: ${S.status.internal_m3u8 ? 'var(--success)' : 'var(--text-muted)'}">${S.status.internal_m3u8 ? 'Active' : 'Off'}</div></div>
   </div>`;
 }
 
@@ -181,7 +182,8 @@ function Dashboard() {
   return `<div class="controls">
     <button onclick="load()">${icons.refresh} Refresh Status</button>
     <button class="${st.fallback_mode ? 'secondary' : 'danger'}" onclick="toggleFallback()">${st.fallback_mode ? 'Disable Fallback Mode' : 'Force Fallback Mode'}</button>
-    <button class="${st.redirect_mode ? 'success' : 'secondary'}" onclick="toggleRedirect()">${st.redirect_mode ? '302 Redirect: ON' : '302 Redirect: OFF'}</button>
+    <button class="${st.redirect_mode ? 'success' : 'secondary'}" onclick="toggleRedirect()" title="Redirect clients directly to the upstream source (bypassing proxy)">${st.redirect_mode ? 'External Bypass: ON' : 'External Bypass: OFF'}</button>
+    <button class="${st.internal_m3u8 ? 'success' : 'secondary'}" onclick="toggleInternalM3u8()" title="Internally redirect .ts requests to .m3u8 variants before proxying">${st.internal_m3u8 ? 'Internal TS→M3U8: ON' : 'Internal TS→M3U8: OFF'}</button>
   </div>
   <div id="dashboard-data">
     ${DashboardData()}
@@ -375,6 +377,7 @@ async function load(bg = false) {
 async function kill(k) { if(confirm('Terminate stream ' + k + '?')) { await del('/streams/' + encodeURIComponent(k)); load(); } }
 async function toggleFallback() { await post('/fallback', {}); load(); }
 async function toggleRedirect() { await post('/redirect', {}); load(); }
+async function toggleInternalM3u8() { await post('/internal_m3u8', {}); load(); }
 
 function addSource() { S.modal = { mode: 'add', id: '', urls: [''] }; showModal(); }
 function editSource(id) { S.modal = { mode: 'edit', id, urls: [...S.config.sources[id]] }; showModal(); }

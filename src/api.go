@@ -97,18 +97,19 @@ func setupAPIRoutes(mux *http.ServeMux) {
         fm := Config.FallbackMode
         af := Config.AutoFallback
         rm := Config.RedirectMode
+        im := Config.InternalM3u8
         configLock.RUnlock()
-		
-		sendJSON(w, map[string]interface{}{
-			"streams":          streamList,
-			"total_streams":    len(streamList),
-			"total_clients":    totalClients,
-			"fallback_streams": fallbackCount,
-			"fallback_mode":    fm,
+
+        sendJSON(w, map[string]interface{}{
+        "streams":          streamList,
+        "total_streams":    len(streamList),
+        "total_clients":    totalClients,
+        "fallback_streams": fallbackCount,
+        "fallback_mode":    fm,
             "auto_fallback":    af,
             "redirect_mode":    rm,
-            "retry_interval":   int(SourceRetryInterval.Seconds()),
-			"uptime":           int(time.Since(startTime).Seconds()),
+            "internal_m3u8":    im,
+            "retry_interval":   int(SourceRetryInterval.Seconds()),			"uptime":           int(time.Since(startTime).Seconds()),
             "cooldowns":        cdList,
 		})
 	})
@@ -127,6 +128,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
             Config.FallbackMode = data.FallbackMode
             Config.AutoFallback = data.AutoFallback
             Config.RedirectMode = data.RedirectMode
+            Config.InternalM3u8 = data.InternalM3u8
             if data.TVHeadend.URL != "" { Config.TVHeadend = data.TVHeadend }
             if data.Proxies != nil { Config.Proxies = data.Proxies }
             if data.Ppproxies != nil { Config.Ppproxies = data.Ppproxies }
@@ -205,8 +207,18 @@ func setupAPIRoutes(mux *http.ServeMux) {
         rm := Config.RedirectMode
         configLock.Unlock()
 		saveConfig()
-		log.Printf("Redirect mode: %v", rm)
+		log.Printf("External Redirect mode: %v", rm)
 		sendJSON(w, map[string]bool{"redirect_mode": rm})
+	})
+
+	mux.HandleFunc("POST /api/internal_m3u8", func(w http.ResponseWriter, r *http.Request) {
+        configLock.Lock()
+		Config.InternalM3u8 = !Config.InternalM3u8
+        im := Config.InternalM3u8
+        configLock.Unlock()
+		saveConfig()
+		log.Printf("Internal M3U8 mode: %v", im)
+		sendJSON(w, map[string]bool{"internal_m3u8": im})
 	})
 
 	mux.HandleFunc("GET /api/xtream/providers", func(w http.ResponseWriter, r *http.Request) {

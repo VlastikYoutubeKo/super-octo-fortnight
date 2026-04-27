@@ -56,6 +56,7 @@ type AppConfig struct {
 	FallbackMode    bool                `json:"fallback_mode"`
 	AutoFallback    bool                `json:"auto_fallback"`
 	RedirectMode    bool                `json:"redirect_mode"`
+	InternalM3u8    bool                `json:"internal_m3u8"`
 	TVHeadend       TVHConfig           `json:"tvheadend"`
 	Proxies         []string            `json:"proxies"`
 	Ppproxies       []string            `json:"ppproxies"`

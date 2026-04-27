@@ -69,7 +69,7 @@ func startProducer(s *Stream) {
 			}
 
 			args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
-			args = append(args, "-fflags", "+genpts+igndts+discardcorrupt")
+			args = append(args, "-fflags", "+genpts+igndts")
 			args = append(args, "-i", srcUrl)
 
 			args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")

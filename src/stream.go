@@ -165,11 +165,21 @@ func startProducer(s *Stream) {
 						}
 					}
 
-					// Send EVERY chunk to clients, don't throw away the first ones!
+					// Send EVERY chunk to clients. If buffer is full, pop oldest.
 					for ch := range s.Clients {
 						select {
 						case ch <- chunk:
 						default:
+							// Channel is full. Pop oldest to make room (ring buffer behavior).
+							select {
+							case <-ch:
+							default:
+							}
+							// Try adding the new chunk again.
+							select {
+							case ch <- chunk:
+							default:
+							}
 						}
 					}
 					s.Mu.Unlock()

@@ -69,8 +69,8 @@ var (
 const (
 	ProxyPort           = 9000
 	APIPort             = 9005
-	StreamBuffer        = 1316 // 7 TS packets (188 bytes each) - MTU friendly
-	BufferQueueSize     = 2000
+	StreamBuffer        = 32712 // 174 TS packets (188 bytes each)
+	BufferQueueSize     = 1000  // ~32MB buffer per client
 	DataTimeout         = 60 * time.Second
 	CleanupDelay        = 10 * time.Second
 	StartupTimeout      = 30 * time.Second

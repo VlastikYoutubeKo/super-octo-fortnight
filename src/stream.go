@@ -146,32 +146,30 @@ func startProducer(s *Stream) {
 
 			buf := make([]byte, StreamBuffer)
 			firstChunk := true
-			var localBytes int64
 
 			for {
 				n, err := io.ReadFull(resp.Body, buf)
 				if n > 0 {
 					chunk := make([]byte, n)
 					copy(chunk, buf[:n])
-					localBytes += int64(n)
 
 					s.Mu.Lock()
 					s.LastDataTime = time.Now()
+					s.CurrentBytesRead += int64(n)
 					
 					if firstChunk {
-						if localBytes >= 131072 { // 128KB threshold
+						if s.CurrentBytesRead >= 32768 { // 32KB threshold to declare source as working
 							firstChunk = false
 							log.Printf("Source #%d (%s) works! Promoting to active stream for %s", idx, srcUrl, s.Key)
 							s.CurrentProcessStart = time.Now()
-							s.CurrentBytesRead = localBytes
 						}
-					} else {
-						s.CurrentBytesRead += int64(n)
-						for ch := range s.Clients {
-							select {
-							case ch <- chunk:
-							default:
-							}
+					}
+
+					// Send EVERY chunk to clients, don't throw away the first ones!
+					for ch := range s.Clients {
+						select {
+						case ch <- chunk:
+						default:
 						}
 					}
 					s.Mu.Unlock()

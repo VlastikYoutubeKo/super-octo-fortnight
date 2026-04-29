@@ -158,7 +158,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	waitStart := time.Now()
 	for {
 		s.Mu.RLock()
-		hasData := s.CurrentBytesRead > 65536
+		hasData := s.CurrentBytesRead > 1024
 		s.Mu.RUnlock()
 		if hasData { break }
 		if time.Since(waitStart) > 30*time.Second {

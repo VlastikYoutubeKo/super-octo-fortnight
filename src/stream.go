@@ -144,12 +144,12 @@ func startProducer(s *Stream) {
 				}
 			}(ctx)
 
-			buf := make([]byte, FfmpegBuffer)
+			buf := make([]byte, StreamBuffer)
 			firstChunk := true
 			var localBytes int64
 
 			for {
-				n, err := resp.Body.Read(buf)
+				n, err := io.ReadFull(resp.Body, buf)
 				if n > 0 {
 					chunk := make([]byte, n)
 					copy(chunk, buf[:n])
@@ -159,7 +159,7 @@ func startProducer(s *Stream) {
 					s.LastDataTime = time.Now()
 					
 					if firstChunk {
-						if localBytes > 32768 {
+						if localBytes >= 131072 { // 128KB threshold
 							firstChunk = false
 							log.Printf("Source #%d (%s) works! Promoting to active stream for %s", idx, srcUrl, s.Key)
 							s.CurrentProcessStart = time.Now()
@@ -178,7 +178,7 @@ func startProducer(s *Stream) {
 				}
 				
 				if err != nil {
-					if err != io.EOF && err != context.Canceled {
+					if err != io.EOF && err != io.ErrUnexpectedEOF && err != context.Canceled {
 						log.Printf("Source #%d [%s] died: %v", idx, s.Key, err)
 					}
 					break

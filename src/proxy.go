@@ -177,17 +177,9 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	bufrw.WriteString("HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nConnection: keep-alive\r\n\r\n")
 	bufrw.Flush()
 
-	var lastWrite time.Time
 	for {
 		select {
 		case chunk := <-clientChan:
-			// Burst pacing: limit speed to ~8-16 MB/s to prevent TVHeadend from choking on initial bursts
-			elapsed := time.Since(lastWrite)
-			if elapsed < 2 * time.Millisecond {
-				time.Sleep((2 * time.Millisecond) - elapsed)
-			}
-			lastWrite = time.Now()
-
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := conn.Write(chunk); err != nil { return }
 		case <-time.After(60 * time.Second):

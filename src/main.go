@@ -69,7 +69,7 @@ var (
 const (
 	ProxyPort           = 9000
 	APIPort             = 9005
-	FfmpegBuffer        = 16384 // 16KB
+	StreamBuffer        = 16544 // 88 TS packets (188 bytes each)
 	BufferQueueSize     = 2000
 	DataTimeout         = 60 * time.Second
 	CleanupDelay        = 10 * time.Second

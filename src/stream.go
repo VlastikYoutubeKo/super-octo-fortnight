@@ -148,7 +148,7 @@ func startProducer(s *Stream) {
 			firstChunk := true
 
 			for {
-				n, err := io.ReadFull(resp.Body, buf)
+				n, err := resp.Body.Read(buf)
 				if n > 0 {
 					chunk := make([]byte, n)
 					copy(chunk, buf[:n])
@@ -165,22 +165,9 @@ func startProducer(s *Stream) {
 						}
 					}
 
-					// Send EVERY chunk to clients. If buffer is full, pop oldest.
+					// Send EVERY chunk to clients without dropping. Blocking send provides natural backpressure.
 					for ch := range s.Clients {
-						select {
-						case ch <- chunk:
-						default:
-							// Channel is full. Pop oldest to make room (ring buffer behavior).
-							select {
-							case <-ch:
-							default:
-							}
-							// Try adding the new chunk again.
-							select {
-							case ch <- chunk:
-							default:
-							}
-						}
+						ch <- chunk
 					}
 					s.Mu.Unlock()
 				}

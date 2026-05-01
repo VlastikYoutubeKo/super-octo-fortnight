@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os/exec"
 	"sync"
 	"time"
 )
@@ -81,27 +82,94 @@ func startProducer(s *Stream) {
 			s.CurrentBytesRead = 0
 			s.Mu.Unlock()
 
-			req, err := http.NewRequestWithContext(ctx, "GET", srcUrl, nil)
-			if err != nil {
-				cancel()
-				continue
-			}
-			req.Header.Set("User-Agent", ua)
+			configLock.RLock()
+			engine := Config.Engine
+			if engine == "" { engine = "http" }
+			configLock.RUnlock()
 
-			client := &http.Client{}
+			var stdoutReader io.Reader
+			var cmd *exec.Cmd
 
-			resp, err := client.Do(req)
-			if err != nil {
-				log.Printf("Failed to fetch source #%d [%s]: %v", idx, s.Key, err)
-				cancel()
-				continue
-			}
+			if engine != "http" {
+				log.Printf("Starting %s engine for %s", engine, s.Key)
+				isFallback := (srcUrl == FallbackURL)
+				var args []string
+				var cmdName string
 
-			if resp.StatusCode != 200 {
-				log.Printf("Source #%d [%s] returned HTTP %d", idx, s.Key, resp.StatusCode)
-				resp.Body.Close()
-				cancel()
-				continue
+				if engine == "ffmpeg" {
+					cmdName = "ffmpeg"
+					args = []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
+					if isFallback {
+						args = append(args, "-stream_loop", "-1")
+					} else {
+						args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
+					}
+					args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
+					args = append(args, "-fflags", "+genpts+igndts")
+					args = append(args, "-i", srcUrl)
+					args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")
+					args = append(args, "-c", "copy")
+					args = append(args, "-bsf:v", "dump_extra=freq=all")
+					args = append(args, "-max_interleave_delta", "0", "-max_muxing_queue_size", "1024")
+					args = append(args, "-avoid_negative_ts", "make_zero")
+					args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "pipe:1")
+
+				} else if engine == "tsduck" {
+					cmdName = "tsp"
+					args = []string{"-I", "http", "--user-agent", ua, "--receive-timeout", "20000"}
+					if isFallback {
+						args = append(args, "--infinite")
+					}
+					args = append(args, srcUrl)
+					args = append(args, "-P", "pcrbitrate")
+					args = append(args, "-P", "regulate")
+					args = append(args, "-P", "continuity", "--fix")
+					args = append(args, "-O", "file")
+					
+				} else if engine == "gstreamer" {
+					cmdName = "gst-launch-1.0"
+					args = []string{"-q", "souphttpsrc", "location=" + srcUrl, "user-agent=" + ua, "is-live=true"}
+					args = append(args, "!", "tsparse", "set-timestamps=true", "!", "fdsink")
+				}
+				
+				cmd = exec.CommandContext(ctx, cmdName, args...)
+				stdout, err := cmd.StdoutPipe()
+				if err != nil {
+					cancel()
+					continue
+				}
+				stdoutReader = stdout
+				
+				if err := cmd.Start(); err != nil {
+					cancel()
+					continue
+				}
+			} else {
+				req, err := http.NewRequestWithContext(ctx, "GET", srcUrl, nil)
+				if err != nil {
+					cancel()
+					continue
+				}
+				req.Header.Set("User-Agent", ua)
+
+				client := &http.Client{}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					log.Printf("Failed to fetch source #%d [%s]: %v", idx, s.Key, err)
+					cancel()
+					continue
+				}
+
+				if resp.StatusCode != 200 {
+					log.Printf("Source #%d [%s] returned HTTP %d", idx, s.Key, resp.StatusCode)
+					resp.Body.Close()
+					cancel()
+					continue
+				}
+				
+				// Wrap body so we can close it later
+				stdoutReader = resp.Body
 			}
 
 			// Monitoring goroutine
@@ -133,9 +201,10 @@ func startProducer(s *Stream) {
 						s.Mu.Unlock()
 					}
 					
-					if diffBytes < 30000 { lowDataTicks++ } else { lowDataTicks = 0 }
+					// 125000 bytes in 2 seconds is 500 kbps
+					if diffBytes < 125000 { lowDataTicks++ } else { lowDataTicks = 0 }
 					
-					if time.Since(lastDataTime) > DataTimeout || lowDataTicks > 15 {
+					if time.Since(lastDataTime) > DataTimeout || lowDataTicks > 10 { // kill after 20 seconds of < 500kbps
 						log.Printf("DataTimeout [%s]: Stream frozen/low bitrate, killing attempt.", s.Key)
 						cancel()
 						break
@@ -148,7 +217,7 @@ func startProducer(s *Stream) {
 			firstChunk := true
 
 			for {
-				n, err := resp.Body.Read(buf)
+				n, err := io.ReadFull(stdoutReader, buf)
 				if n > 0 {
 					chunk := make([]byte, n)
 					copy(chunk, buf[:n])
@@ -185,8 +254,15 @@ func startProducer(s *Stream) {
 				if !active { break }
 			}
 
-			resp.Body.Close()
-			cancel()
+			if engine != "http" && cmd != nil {
+				cancel()
+				cmd.Wait()
+			} else {
+				if closer, ok := stdoutReader.(io.ReadCloser); ok {
+					closer.Close()
+				}
+				cancel()
+			}
 			
 			s.Mu.RLock()
 			if !s.Active {

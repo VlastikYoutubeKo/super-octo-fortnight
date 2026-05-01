@@ -75,11 +75,6 @@ func searchGlobalAlternatives(channelName string) []string {
 				results = append(results, msg.Data.StreamURL)
 			}
 		}
-		
-		// Stop after finding a reasonable amount of alternatives to avoid long waits
-		if len(results) >= 10 {
-			break
-		}
 	}
 
 	log.Printf("Found %d global alternatives for %s", len(results), channelName)

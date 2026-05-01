@@ -98,6 +98,8 @@ func setupAPIRoutes(mux *http.ServeMux) {
         af := Config.AutoFallback
         rm := Config.RedirectMode
         im := Config.InternalM3u8
+        eng := Config.Engine
+        if eng == "" { eng = "http" }
         configLock.RUnlock()
 
         sendJSON(w, map[string]interface{}{
@@ -109,6 +111,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
             "auto_fallback":    af,
             "redirect_mode":    rm,
             "internal_m3u8":    im,
+            "engine":           eng,
             "retry_interval":   int(SourceRetryInterval.Seconds()),			"uptime":           int(time.Since(startTime).Seconds()),
             "cooldowns":        cdList,
 		})
@@ -129,6 +132,7 @@ func setupAPIRoutes(mux *http.ServeMux) {
             Config.AutoFallback = data.AutoFallback
             Config.RedirectMode = data.RedirectMode
             Config.InternalM3u8 = data.InternalM3u8
+            if data.Engine != "" { Config.Engine = data.Engine } else { Config.Engine = "http" }
             if data.TVHeadend.URL != "" { Config.TVHeadend = data.TVHeadend }
             if data.Proxies != nil { Config.Proxies = data.Proxies }
             if data.Ppproxies != nil { Config.Ppproxies = data.Ppproxies }
@@ -219,6 +223,21 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		saveConfig()
 		log.Printf("Internal M3U8 mode: %v", im)
 		sendJSON(w, map[string]bool{"internal_m3u8": im})
+	})
+
+	mux.HandleFunc("POST /api/engine", func(w http.ResponseWriter, r *http.Request) {
+		var data map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&data); err == nil && data["engine"] != "" {
+			configLock.Lock()
+			Config.Engine = data["engine"]
+			eng := Config.Engine
+			configLock.Unlock()
+			saveConfig()
+			log.Printf("Engine set to: %s", eng)
+			sendJSON(w, map[string]string{"engine": eng})
+		} else {
+			http.Error(w, "Bad request", 400)
+		}
 	})
 
 	mux.HandleFunc("GET /api/xtream/providers", func(w http.ResponseWriter, r *http.Request) {

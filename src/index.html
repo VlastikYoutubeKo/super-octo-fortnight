@@ -184,6 +184,7 @@ function Dashboard() {
     <button class="${st.fallback_mode ? 'secondary' : 'danger'}" onclick="toggleFallback()">${st.fallback_mode ? 'Disable Fallback Mode' : 'Force Fallback Mode'}</button>
     <button class="${st.redirect_mode ? 'success' : 'secondary'}" onclick="toggleRedirect()" title="Redirect clients directly to the upstream source (bypassing proxy)">${st.redirect_mode ? 'External Bypass: ON' : 'External Bypass: OFF'}</button>
     <button class="${st.internal_m3u8 ? 'success' : 'secondary'}" onclick="toggleInternalM3u8()" title="Internally redirect .ts requests to .m3u8 variants before proxying">${st.internal_m3u8 ? 'Internal TS→M3U8: ON' : 'Internal TS→M3U8: OFF'}</button>
+    <button class="primary" onclick="cycleEngine()" title="Switch streaming engine (Pure HTTP, TSDuck, FFmpeg, GStreamer)">Engine: ${st.engine ? st.engine.toUpperCase() : 'HTTP'}</button>
   </div>
   <div id="dashboard-data">
     ${DashboardData()}
@@ -378,6 +379,14 @@ async function kill(k) { if(confirm('Terminate stream ' + k + '?')) { await del(
 async function toggleFallback() { await post('/fallback', {}); load(); }
 async function toggleRedirect() { await post('/redirect', {}); load(); }
 async function toggleInternalM3u8() { await post('/internal_m3u8', {}); load(); }
+async function cycleEngine() { 
+  const engines = ['http', 'ffmpeg', 'tsduck', 'gstreamer'];
+  let cur = S.status.engine || 'http';
+  let idx = engines.indexOf(cur);
+  let next = engines[(idx + 1) % engines.length];
+  await post('/engine', {engine: next}); 
+  load(); 
+}
 
 function addSource() { S.modal = { mode: 'add', id: '', urls: [''] }; showModal(); }
 function editSource(id) { S.modal = { mode: 'edit', id, urls: [...S.config.sources[id]] }; showModal(); }
@@ -478,6 +487,14 @@ function render() {
     <div class="tab-content ${S.tab === 'dashboard' ? 'active' : ''}">${Dashboard()}</div>
     <div class="tab-content ${S.tab === 'sources' ? 'active' : ''}">${Sources()}</div>
     <div class="tab-content ${S.tab === 'xtream' ? 'active' : ''}">${Xtream()}</div>
+  `;
+}
+
+setInterval(() => { if (S.tab === 'dashboard' && !S.loading) load(true); }, 3000);
+load();
+</script>
+</body>
+</html>eam' ? 'active' : ''}">${Xtream()}</div>
   `;
 }
 

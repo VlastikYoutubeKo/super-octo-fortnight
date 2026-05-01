@@ -107,6 +107,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		configLock.RLock()
 		autoFallback := Config.AutoFallback
 		fallbackMode := Config.FallbackMode
+		internalM3u8 := Config.InternalM3u8
 		configLock.RUnlock()
 
 		var urls []string
@@ -115,7 +116,12 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// 1. Add local sources
 			for _, u := range sourceUrls {
-				urls = append(urls, strings.Replace(u, "{channel_id}", cleanID, -1))
+				finalUrl := strings.Replace(u, "{channel_id}", cleanID, -1)
+				if internalM3u8 && strings.HasSuffix(finalUrl, ".ts") {
+					m3u8Url := strings.TrimSuffix(finalUrl, ".ts") + ".m3u8"
+					urls = append(urls, m3u8Url)
+				}
+				urls = append(urls, finalUrl)
 			}
 
 			// 2. Smart Proxy lookup
@@ -177,17 +183,25 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	bufrw.WriteString("HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\nConnection: keep-alive\r\n\r\n")
 	bufrw.Flush()
 
-	var lastWrite time.Time
+	var bytesSent int64
+	lastWrite := time.Now()
+
 	for {
 		select {
 		case chunk := <-clientChan:
-			// Artificial bottleneck: pace 1ms per chunk. For a 5264 byte chunk, this equals ~42 Mbps max speed.
-			// This completely eliminates TVHeadend buffering while keeping backpressure on the provider.
-			elapsed := time.Since(lastWrite)
-			if elapsed < 1 * time.Millisecond {
-				time.Sleep((1 * time.Millisecond) - elapsed)
+			bytesSent += int64(len(chunk))
+			
+			// Artificial bottleneck: Limit to ~10 MB/s (80 Mbps) to prevent TVH buffering on burst.
+			// Evaluated every 500 KB to avoid OS sleep precision issues (1ms sleep is often 15ms in reality).
+			if bytesSent >= 500000 {
+				elapsed := time.Since(lastWrite)
+				// 500 KB at 10 MB/s = 50 milliseconds
+				if elapsed < 50 * time.Millisecond {
+					time.Sleep((50 * time.Millisecond) - elapsed)
+				}
+				bytesSent = 0
+				lastWrite = time.Now()
 			}
-			lastWrite = time.Now()
 
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := conn.Write(chunk); err != nil { return }

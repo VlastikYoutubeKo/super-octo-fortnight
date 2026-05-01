@@ -121,8 +121,9 @@ func startProducer(s *Stream) {
 						args = append(args, "--infinite")
 					}
 					args = append(args, srcUrl)
-					args = append(args, "-P", "pcrbitrate")
-					args = append(args, "-P", "regulate")
+					
+					// Do not use -P regulate, as it chokes the stream to 1.5mbps if PCR is calculated wrongly.
+					// We already have a 10MB/s bottleneck in proxy.go, and TVH has its own buffers.
 					args = append(args, "-P", "continuity", "--fix")
 					args = append(args, "-O", "file")
 					

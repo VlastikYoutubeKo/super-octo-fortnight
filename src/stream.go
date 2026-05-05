@@ -202,10 +202,10 @@ func startProducer(s *Stream) {
 						s.Mu.Unlock()
 					}
 					
-					// 125000 bytes in 2 seconds is 500 kbps
-					if diffBytes < 125000 { lowDataTicks++ } else { lowDataTicks = 0 }
+					// 25000 bytes in 2 seconds is 100 kbps (lowered from 500kbps to prevent false positives)
+					if diffBytes < 25000 { lowDataTicks++ } else { lowDataTicks = 0 }
 					
-					if time.Since(lastDataTime) > DataTimeout || lowDataTicks > 10 { // kill after 20 seconds of < 500kbps
+					if time.Since(lastDataTime) > DataTimeout || lowDataTicks > 10 { // kill after 20 seconds of < 100kbps
 						log.Printf("DataTimeout [%s]: Stream frozen/low bitrate, killing attempt.", s.Key)
 						cancel()
 						break
@@ -264,6 +264,19 @@ func startProducer(s *Stream) {
 				}
 				cancel()
 			}
+			
+			// === DISCONNECT ALL CLIENTS ON SOURCE SWITCH ===
+			// By closing their channels, we force TVHeadend/VLC/IPTV players to seamlessly reconnect.
+			// This gives them the new source with a fresh PAT/PMT and a clean audio decoder start,
+			// completely eliminating audio dropouts and datamoshing caused by raw stream concatenation.
+			s.Mu.Lock()
+			for ch := range s.Clients {
+				close(ch)
+				delete(s.Clients, ch)
+			}
+			s.CurrentProcessStart = time.Time{}
+			s.CurrentBytesRead = 0
+			s.Mu.Unlock()
 			
 			s.Mu.RLock()
 			if !s.Active {

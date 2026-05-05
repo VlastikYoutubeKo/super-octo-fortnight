@@ -164,10 +164,12 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	waitStart := time.Now()
 	for {
 		s.Mu.RLock()
-		hasData := s.CurrentBytesRead > 1024
+		// Wait for 64KB of data to ensure we have headers and a clean start without timing out
+		hasData := s.CurrentBytesRead > 65536
 		s.Mu.RUnlock()
 		if hasData { break }
 		if time.Since(waitStart) > 30*time.Second {
+			log.Printf("Stream Timeout for %s: no data after 30s", key)
 			http.Error(w, "Stream Timeout", http.StatusGatewayTimeout)
 			return
 		}
@@ -188,7 +190,11 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case chunk := <-clientChan:
+		case chunk, ok := <-clientChan:
+			if !ok {
+				// Channel closed by proxy (e.g., source failover to force client reconnect)
+				return
+			}
 			bytesSent += int64(len(chunk))
 			
 			// Artificial bottleneck: Limit to ~10 MB/s (80 Mbps) to prevent TVH buffering on burst.

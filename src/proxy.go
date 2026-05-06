@@ -164,8 +164,8 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	waitStart := time.Now()
 	for {
 		s.Mu.RLock()
-		// Wait for 64KB of data to ensure we have headers and a clean start without timing out
-		hasData := s.CurrentBytesRead > 65536
+		// Send headers as soon as we have ANY data, otherwise TVHeadend's 10-second HTTP connection timeout kills the request
+		hasData := s.CurrentBytesRead > 0
 		s.Mu.RUnlock()
 		if hasData { break }
 		if time.Since(waitStart) > 30*time.Second {

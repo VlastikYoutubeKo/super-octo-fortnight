@@ -114,13 +114,15 @@ func startProducer(s *Stream) {
 						args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
 					}
 					args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
-					args = append(args, "-fflags", "+genpts+igndts")
+					// Removed +igndts as it ignores original DTS, causing PCR and DTS to drift and TVHeadend to drop packets
+					args = append(args, "-fflags", "+genpts")
 					args = append(args, "-i", srcUrl)
 					args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")
 					args = append(args, "-c", "copy")
 					args = append(args, "-bsf:v", "dump_extra=freq=all")
 					args = append(args, "-max_interleave_delta", "0", "-max_muxing_queue_size", "1024")
-					args = append(args, "-avoid_negative_ts", "make_zero")
+					// Force muxer to perfectly align PCR and DTS
+					args = append(args, "-muxdelay", "0", "-muxpreload", "0", "-avoid_negative_ts", "make_zero")
 					args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "pipe:1")
 
 				} else if engine == "tsduck" {
@@ -283,13 +285,19 @@ func startProducer(s *Stream) {
 			
 			// === DISCONNECT ALL CLIENTS ON SOURCE SWITCH ===
 			// By closing their channels, we force TVHeadend/VLC/IPTV players to seamlessly reconnect.
-			// This gives them the new source with a fresh PAT/PMT and a clean audio decoder start,
-			// completely eliminating audio dropouts and datamoshing caused by raw stream concatenation.
-			s.Mu.Lock()
-			for ch := range s.Clients {
-				close(ch)
-				delete(s.Clients, ch)
+			// This gives them the new source with a fresh PAT/PMT and a clean audio decoder start.
+			// CRITICAL: Only disconnect if we ACTUALLY sent data (!firstChunk).
+			// If firstChunk is still true, the source was dead on arrival, so we shouldn't punish waiting clients.
+			if !firstChunk {
+				s.Mu.Lock()
+				for ch := range s.Clients {
+					close(ch)
+					delete(s.Clients, ch)
+				}
+				s.Mu.Unlock()
 			}
+			
+			s.Mu.Lock()
 			s.CurrentProcessStart = time.Time{}
 			s.CurrentBytesRead = 0
 			s.Mu.Unlock()

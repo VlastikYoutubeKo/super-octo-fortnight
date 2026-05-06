@@ -43,26 +43,34 @@ func startProducer(s *Stream) {
 		return
 	}
 	s.Active = true
-	urls := make([]string, len(s.Urls))
-	copy(urls, s.Urls)
 	s.Mu.Unlock()
 
-	log.Printf("Starting stable producer (Pure HTTP): %s", s.Key)
+	log.Printf("Starting stable producer: %s", s.Key)
 
+	idx := 0
 	for {
 		s.Mu.RLock()
 		if !s.Active {
 			s.Mu.RUnlock()
 			break
 		}
+		urlsLen := len(s.Urls)
+		if urlsLen == 0 {
+			s.Mu.RUnlock()
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		if idx >= urlsLen {
+			idx = 0 // loop back to the beginning
+		}
+		srcUrl := s.Urls[idx]
 		s.Mu.RUnlock()
 
-		for idx, srcUrl := range urls {
-			s.Mu.Lock()
-			s.CurrentUrlIdx = idx
-			s.Mu.Unlock()
+		s.Mu.Lock()
+		s.CurrentUrlIdx = idx
+		s.Mu.Unlock()
 
-			userAgents := []string{
+		userAgents := []string{
 				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
 				"Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 234 Safari/533.3",
 				"Enigma2 HbbTV/1.1.1 (+PVR+RTSP+DL;openATV;;;)",
@@ -293,16 +301,8 @@ func startProducer(s *Stream) {
 			}
 			s.Mu.RUnlock()
 			time.Sleep(1 * time.Second)
+			idx++
 		}
-		
-		s.Mu.RLock()
-		if !s.Active {
-			s.Mu.RUnlock()
-			break
-		}
-		s.Mu.RUnlock()
-		time.Sleep(2 * time.Second)
-	}
 
 	s.Mu.Lock()
 	if s.CancelFunc != nil {

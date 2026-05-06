@@ -124,16 +124,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 				urls = append(urls, finalUrl)
 			}
 
-			// 2. Smart Proxy lookup
-			channelNamesLock.RLock()
-			name := ChannelNames[key]
-			channelNamesLock.RUnlock()
-			if name != "" {
-				log.Printf("Smart Proxy: Searching alternatives for '%s' (%s)", name, key)
-				alts := searchGlobalAlternatives(name)
-				urls = append(urls, alts...)
-			}
-
 			if autoFallback {
 				urls = append(urls, FallbackURL)
 			}
@@ -150,7 +140,36 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()
 
-	if !exists { go startProducer(s) }
+	if !exists { 
+		go startProducer(s) 
+		
+		// 2. Smart Proxy lookup in background
+		channelNamesLock.RLock()
+		name := ChannelNames[key]
+		channelNamesLock.RUnlock()
+		
+		configLock.RLock()
+		autoFb := Config.AutoFallback
+		configLock.RUnlock()
+		
+		if name != "" {
+			go func(stream *Stream, chName string) {
+				log.Printf("Smart Proxy (Background): Searching alternatives for '%s' (%s)", chName, stream.Key)
+				alts := searchGlobalAlternatives(chName)
+				if len(alts) > 0 {
+					stream.Mu.Lock()
+					// Insert before the fallback URL if autoFallback is enabled
+					if autoFb && len(stream.Urls) > 0 && stream.Urls[len(stream.Urls)-1] == FallbackURL {
+						stream.Urls = append(stream.Urls[:len(stream.Urls)-1], append(alts, FallbackURL)...)
+					} else {
+						stream.Urls = append(stream.Urls, alts...)
+					}
+					stream.Mu.Unlock()
+					log.Printf("Appended %d global alternatives to active stream %s", len(alts), stream.Key)
+				}
+			}(s, name)
+		}
+	}
 
 	defer func() {
 		s.Mu.Lock()

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 type SearchResult struct {
@@ -18,10 +21,22 @@ type SearchResult struct {
 	} `json:"data"`
 }
 
+var (
+	globalSearchCache = make(map[string][]string)
+	searchCacheLock   sync.RWMutex
+)
+
 func searchGlobalAlternatives(channelName string) []string {
 	if channelName == "" {
 		return nil
 	}
+
+	searchCacheLock.RLock()
+	if cached, ok := globalSearchCache[channelName]; ok {
+		searchCacheLock.RUnlock()
+		return cached
+	}
+	searchCacheLock.RUnlock()
 
 	// Clean name for better search (remove common quality markers and symbols)
 	cleanName := channelName
@@ -54,7 +69,9 @@ func searchGlobalAlternatives(channelName string) []string {
 	
 	log.Printf("Searching global alternatives for: %s (query: %s)", channelName, cleanName)
 
-	resp, err := httpClient.Get(searchUrl)
+	// Use a longer timeout for global search as it needs to scan many providers
+	searchClient := &http.Client{Timeout: 60 * time.Second}
+	resp, err := searchClient.Get(searchUrl)
 	if err != nil {
 		log.Printf("Global search request failed: %v", err)
 		return nil
@@ -76,6 +93,10 @@ func searchGlobalAlternatives(channelName string) []string {
 			}
 		}
 	}
+
+	searchCacheLock.Lock()
+	globalSearchCache[channelName] = results
+	searchCacheLock.Unlock()
 
 	log.Printf("Found %d global alternatives for %s", len(results), channelName)
 	return results

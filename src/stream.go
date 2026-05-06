@@ -154,12 +154,12 @@ func startProducer(s *Stream) {
 				}
 				req.Header.Set("User-Agent", ua)
 
-				// Fast 3s timeout for connection and headers to quickly skip dead sources
+				// Fast 1s timeout for connection and headers to instantly skip dead sources
 				transport := &http.Transport{
 					DialContext: (&net.Dialer{
-						Timeout: 3 * time.Second,
+						Timeout: 1 * time.Second,
 					}).DialContext,
-					ResponseHeaderTimeout: 3 * time.Second,
+					ResponseHeaderTimeout: 1 * time.Second,
 				}
 				client := &http.Client{Transport: transport}
 

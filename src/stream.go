@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"net/http"
 	"os/exec"
 	"sync"
@@ -153,7 +154,14 @@ func startProducer(s *Stream) {
 				}
 				req.Header.Set("User-Agent", ua)
 
-				client := &http.Client{}
+				// Fast 3s timeout for connection and headers to quickly skip dead sources
+				transport := &http.Transport{
+					DialContext: (&net.Dialer{
+						Timeout: 3 * time.Second,
+					}).DialContext,
+					ResponseHeaderTimeout: 3 * time.Second,
+				}
+				client := &http.Client{Transport: transport}
 
 				resp, err := client.Do(req)
 				if err != nil {

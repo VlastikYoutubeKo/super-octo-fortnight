@@ -73,13 +73,13 @@ const (
 	StreamBuffer        = 5264 // 28 TS packets (188 bytes each)
 	BufferQueueSize     = 5000 // ~26MB buffer per client
 	DataTimeout         = 60 * time.Second
-	CleanupDelay        = 10 * time.Second
+	CleanupDelay        = 30 * time.Second
 	StartupTimeout      = 30 * time.Second
 	SourceRetryInterval = 60 * time.Second
 	SourceCheckTimeout  = 15 * time.Second
 	TVHCheckInterval    = 3 * time.Second
 	FallbackURL         = "https://theariatv.github.io/channeldead.mp4"
-    TVHGracePeriod      = 30 * time.Second
+    TVHGracePeriod      = 60 * time.Second
 )
 
 func main() {

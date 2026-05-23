@@ -77,6 +77,26 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	key := fmt.Sprintf("%s:%s", sourceID, cleanID)
+	
+	// === AUTO-DISCOVERY OF SCRAMBLED IDs ===
+	// If the provider changed IDs, we try to find the new ID by name.
+	channelNamesLock.RLock()
+	originalName := ChannelNames[key]
+	channelNamesLock.RUnlock()
+	
+	if originalName != "" {
+		norm := NormalizeChannelName(originalName)
+		currentIDsLock.RLock()
+		currentID := CurrentIDs[fmt.Sprintf("%s:%s", sourceID, norm)]
+		currentIDsLock.RUnlock()
+		
+		if currentID != "" && currentID != cleanID {
+			log.Printf("ID Discovery: Stream %s was renamed/scrambled. Old ID: %s -> New ID: %s (Name: %s)", sourceID, cleanID, currentID, originalName)
+			cleanID = currentID
+			key = fmt.Sprintf("%s:%s", sourceID, cleanID)
+		}
+	}
+
 	log.Printf("Proxy Request from %s | Key: %s | Path: %s", clientIP, key, r.URL.Path)
 
 	allowedIPs, enforcementEnabled := getAllowedIPs()

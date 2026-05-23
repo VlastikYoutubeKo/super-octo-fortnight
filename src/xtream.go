@@ -7,17 +7,27 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"math/rand"
 	"time"
 )
 
-var xtreamClient = &http.Client{
-	Timeout: 300 * time.Second,
-}
+var (
+	xtreamClient = &http.Client{
+		Timeout: 300 * time.Second,
+	}
+	
+	// Map: SourceID:NormalizedName -> CurrentStreamID
+	CurrentIDs      = make(map[string]string)
+	currentIDsLock  sync.RWMutex
+)
 
 func refreshChannelNamesLoop() {
+	loadNamesCache()
 	for {
 		// Try to refresh from any available provider
 		configLock.RLock()
@@ -32,34 +42,93 @@ func refreshChannelNamesLoop() {
 			continue
 		}
 
-		success := false
+		anySuccess := false
 		for _, p := range providers {
 			log.Printf("Refreshing channel names from provider: %s", p.Name)
 			names, err := fetchLiveStreams(p)
 			if err == nil && len(names) > 0 {
 				channelNamesLock.Lock()
+				currentIDsLock.Lock()
 				for id, name := range names {
-					// We store by both key formats just in case
 					key := fmt.Sprintf("%s:%s", p.SourceID, id)
 					ChannelNames[key] = name
+					
+					norm := NormalizeChannelName(name)
+					if norm != "" {
+						mappingKey := fmt.Sprintf("%s:%s", p.SourceID, norm)
+						CurrentIDs[mappingKey] = id
+					}
 				}
+				currentIDsLock.Unlock()
 				channelNamesLock.Unlock()
 				log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
-				success = true
-				break // One provider is enough for mapping
+				anySuccess = true
+				saveNamesCache() // Save immediately
 			} else if err != nil {
 				log.Printf("Failed to refresh names from %s: %v", p.Name, err)
 			}
 			time.Sleep(2 * time.Second)
 		}
 
-		if success {
+		if anySuccess {
 			time.Sleep(1 * time.Hour) // Refresh every hour
 		} else {
 			time.Sleep(5 * time.Minute) // Retry sooner if all failed
 		}
 	}
 }
+
+func saveNamesCache() {
+	channelNamesLock.RLock()
+	currentIDsLock.RLock()
+	defer currentIDsLock.RUnlock()
+	defer channelNamesLock.RUnlock()
+
+	data := map[string]interface{}{
+		"names": ChannelNames,
+		"ids":   CurrentIDs,
+	}
+	
+	cacheFile := filepath.Join(scriptDir, "names_cache.json")
+	file, err := os.Create(cacheFile)
+	if err != nil {
+		log.Printf("Failed to create names cache file: %v", err)
+		return
+	}
+	defer file.Close()
+	
+	json.NewEncoder(file).Encode(data)
+}
+
+func loadNamesCache() {
+	cacheFile := filepath.Join(scriptDir, "names_cache.json")
+	file, err := os.Open(cacheFile)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	var data struct {
+		Names map[string]string `json:"names"`
+		IDs   map[string]string `json:"ids"`
+	}
+	
+	if err := json.NewDecoder(file).Decode(&data); err == nil {
+		channelNamesLock.Lock()
+		for k, v := range data.Names {
+			ChannelNames[k] = v
+		}
+		channelNamesLock.Unlock()
+		
+		currentIDsLock.Lock()
+		for k, v := range data.IDs {
+			CurrentIDs[k] = v
+		}
+		currentIDsLock.Unlock()
+		log.Printf("Loaded %d names and %d ID mappings from cache", len(data.Names), len(data.IDs))
+	}
+}
+
 
 func fetchLiveStreams(p Provider) (map[string]string, error) {
 	apiUrl := fmt.Sprintf("%s/player_api.php?username=%s&password=%s&action=get_live_streams", p.URL, p.Username, p.Password)

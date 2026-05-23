@@ -148,28 +148,37 @@ func startProducer(s *Stream) {
 				stdout, err := cmd.StdoutPipe()
 				if err != nil {
 					cancel()
+					time.Sleep(2 * time.Second)
+					idx++
 					continue
 				}
 				stdoutReader = stdout
 				
 				if err := cmd.Start(); err != nil {
 					cancel()
+					time.Sleep(2 * time.Second)
+					idx++
 					continue
 				}
 			} else {
 				req, err := http.NewRequestWithContext(ctx, "GET", srcUrl, nil)
 				if err != nil {
 					cancel()
+					time.Sleep(2 * time.Second)
+					idx++
 					continue
 				}
 				req.Header.Set("User-Agent", ua)
+				req.Header.Set("Accept", "*/*")
+				req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+				req.Header.Set("Connection", "keep-alive")
 
-				// Fast 1s timeout for connection and headers to instantly skip dead sources
+				// 3s timeout for connection and headers to instantly skip dead/blocked sources
 				transport := &http.Transport{
 					DialContext: (&net.Dialer{
-						Timeout: 1 * time.Second,
+						Timeout: 3 * time.Second,
 					}).DialContext,
-					ResponseHeaderTimeout: 1 * time.Second,
+					ResponseHeaderTimeout: 3 * time.Second,
 				}
 				client := &http.Client{Transport: transport}
 
@@ -177,6 +186,8 @@ func startProducer(s *Stream) {
 				if err != nil {
 					log.Printf("Failed to fetch source #%d [%s]: %v", idx, s.Key, err)
 					cancel()
+					time.Sleep(2 * time.Second)
+					idx++
 					continue
 				}
 
@@ -184,6 +195,8 @@ func startProducer(s *Stream) {
 					log.Printf("Source #%d [%s] returned HTTP %d", idx, s.Key, resp.StatusCode)
 					resp.Body.Close()
 					cancel()
+					time.Sleep(2 * time.Second)
+					idx++
 					continue
 				}
 				

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -166,6 +167,7 @@ func monitorSourceRecovery() {
 type tvhSubResponse struct {
     Entries []struct {
         ServerURL string `json:"server_url"`
+        Channel   string `json:"channel"`
     } `json:"entries"`
 }
 
@@ -188,38 +190,73 @@ func monitorTVH() {
 		if err == nil {
 			req.SetBasicAuth(tvhUser, tvhPass)
 			resp, err := client.Do(req)
-			if err == nil {
+			if err != nil {
+				log.Printf("TVH Monitor: API request failed: %v", err)
+			} else {
 				if resp.StatusCode == 200 {
 					var data tvhSubResponse
-					if json.NewDecoder(resp.Body).Decode(&data) == nil {
+					bodyCopy, _ := io.ReadAll(resp.Body)
+					resp.Body.Close()
+
+					if err := json.Unmarshal(bodyCopy, &data); err != nil {
+						log.Printf("TVH Monitor: JSON decode failed: %v | Body: %s", err, string(bodyCopy))
+					} else {
 						active := make(map[string]bool)
+						activeNames := make(map[string]bool)
 						for _, sub := range data.Entries {
 							u := sub.ServerURL
-							parts := strings.Split(strings.Trim(u, "/"), "/")
-							if len(parts) > 1 {
-								channelID := strings.Split(parts[1], ".")[0]
-								active[fmt.Sprintf("%s:%s", parts[0], channelID)] = true
+							activeNames[sub.Channel] = true
+							log.Printf("TVH Active Channel Name: '%s'", sub.Channel)
+							
+							parsed, err := url.Parse(u)
+							if err == nil && parsed.Path != "" {
+								path := strings.TrimPrefix(parsed.Path, "/")
+								parts := strings.Split(path, "/")
+								if len(parts) == 2 {
+									channelID := strings.Split(parts[1], ".")[0]
+									key := fmt.Sprintf("%s:%s", parts[0], channelID)
+									active[key] = true
+									log.Printf("TVH Active Sub (URL): %s", key)
+								}
 							}
 						}
 
 						streamsLock.Lock()
+						channelNamesLock.RLock()
 						for key, s := range streams {
-							if !active[key] {
+							name := strings.ToLower(ChannelNames[key])
+							isActuallyActive := active[key]
+							
+							if !isActuallyActive && name != "" {
+								for activeName := range activeNames {
+									an := strings.ToLower(activeName)
+									if strings.Contains(name, an) || strings.Contains(an, name) {
+										isActuallyActive = true
+										break
+									}
+								}
+							}
+							
+							if !isActuallyActive {
 								s.Mu.RLock()
 								clients := len(s.Clients)
 								age := time.Since(s.Created)
+								stillActive := s.Active
 								s.Mu.RUnlock()
 
-								if clients == 0 && age >= TVHGracePeriod {
-									log.Printf("TVH: cleanup %s", key)
+								if clients == 0 && age >= TVHGracePeriod && !stillActive {
+									log.Printf("TVH: cleanup %s (Name: '%s', Clients: 0, Age: %v, Active: %v)", key, ChannelNames[key], age, stillActive)
 									go cleanupStream(key)
 								}
 							}
 						}
+						channelNamesLock.RUnlock()
 						streamsLock.Unlock()
 					}
+				} else {
+					log.Printf("TVH Monitor: API returned status %d", resp.StatusCode)
+					resp.Body.Close()
 				}
-				resp.Body.Close()
 			}
 		}
 

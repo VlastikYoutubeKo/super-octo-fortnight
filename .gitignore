@@ -1,13 +1,21 @@
 # Binaries
 proxy_server
 proxy_server_test
+proxy_pure_http
 build/
 
 # Configs
 config.json
 config.bak
+names_cache.json
 proxy.pid
 proxy.log
+
+# Temp
+temp.ts
+temp_stream.ts
+test_url.go
+tsduck.deb
 
 # Go
 src/vendor/

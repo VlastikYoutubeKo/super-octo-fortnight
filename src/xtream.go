@@ -275,7 +275,7 @@ func xtreamAPI(provider Provider, action string, params map[string]string) inter
 	}
 
 	for i := 0; i < maxRetries; i++ {
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := &http.Client{Timeout: 60 * time.Second}
 		if len(proxies) > 0 {
 			proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))])
 			if err == nil {

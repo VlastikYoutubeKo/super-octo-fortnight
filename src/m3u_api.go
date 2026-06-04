@@ -30,9 +30,9 @@ func setupM3URoutes(mux *http.ServeMux) {
 			proxyHost = "localhost"
 		}
 
-		var m3uLines []string
-		m3uLines = append(m3uLines, "#EXTM3U")
+		epgUrl := r.URL.Query().Get("epg_url")
 
+		var allStreams []map[string]interface{}
 		catIDs := strings.Split(categories, ",")
 		for _, catID := range catIDs {
 			catID = strings.TrimSpace(catID)
@@ -41,40 +41,88 @@ func setupM3URoutes(mux *http.ServeMux) {
 			}
 
 			streamsData := getStreams(provider, catID, "live")
-			if streamsData == nil {
-				continue
-			}
-
-			for _, item := range streamsData {
-				if m, ok := item.(map[string]interface{}); ok {
-					var streamID string
-					if val, ok := m["stream_id"]; ok && val != nil {
-						if f, isFloat := val.(float64); isFloat {
-							streamID = fmt.Sprintf("%.0f", f)
-						} else {
-							streamID = fmt.Sprintf("%v", val)
-						}
+			if streamsData != nil {
+				for _, item := range streamsData {
+					if m, ok := item.(map[string]interface{}); ok {
+						allStreams = append(allStreams, m)
 					}
-
-					streamName := fmt.Sprintf("%v", m["name"])
-					epgID := fmt.Sprintf("%v", m["epg_channel_id"])
-					if epgID == "<nil>" {
-						epgID = ""
-					}
-
-					epgMappingLock.RLock()
-					if mappedID, ok := EPGMapping[streamName]; ok && mappedID != "" {
-						epgID = mappedID
-					}
-					epgMappingLock.RUnlock()
-
-					extinf := fmt.Sprintf(`#EXTINF:-1 tvg-id="%s" tvg-name="%s",%s`, epgID, streamName, streamName)
-					m3uLines = append(m3uLines, extinf)
-
-					proxyURL := fmt.Sprintf("http://%s:%d/%s/%s.ts", proxyHost, ProxyPort, provider.SourceID, streamID)
-					m3uLines = append(m3uLines, proxyURL)
 				}
 			}
+		}
+
+		// Collect unmapped
+		var unmapped []string
+		epgMappingLock.RLock()
+		for _, m := range allStreams {
+			streamName := fmt.Sprintf("%v", m["name"])
+			if _, ok := EPGMapping[streamName]; !ok {
+				unmapped = append(unmapped, streamName)
+			}
+		}
+		epgMappingLock.RUnlock()
+
+		// Run Auto-EPG if requested
+		if epgUrl != "" && len(unmapped) > 0 {
+			configLock.RLock()
+			apiKey := Config.GeminiAPIKey
+			configLock.RUnlock()
+
+			if apiKey != "" {
+				epgChannels, err := FetchEPGChannelIDs(epgUrl)
+				if err == nil {
+					// We might have many unmapped, Gemini might have limits. 
+					// For safety, we match all of them, but in production we'd chunk them.
+					matched, err := MatchWithGemini(apiKey, unmapped, epgChannels)
+					if err == nil {
+						epgMappingLock.Lock()
+						for k, v := range matched {
+							if v != "" {
+								EPGMapping[k] = v
+							}
+						}
+						epgMappingLock.Unlock()
+						saveEpgMapping()
+					} else {
+						// log error but continue generating M3U
+						fmt.Printf("Auto-EPG Gemini match failed: %v\n", err)
+					}
+				} else {
+					fmt.Printf("Auto-EPG Fetch EPG failed: %v\n", err)
+				}
+			}
+		}
+
+		// Generate output
+		var m3uLines []string
+		m3uLines = append(m3uLines, "#EXTM3U")
+
+		for _, m := range allStreams {
+			var streamID string
+			if val, ok := m["stream_id"]; ok && val != nil {
+				if f, isFloat := val.(float64); isFloat {
+					streamID = fmt.Sprintf("%.0f", f)
+				} else {
+					streamID = fmt.Sprintf("%v", val)
+				}
+			}
+
+			streamName := fmt.Sprintf("%v", m["name"])
+			epgID := fmt.Sprintf("%v", m["epg_channel_id"])
+			if epgID == "<nil>" {
+				epgID = ""
+			}
+
+			epgMappingLock.RLock()
+			if mappedID, ok := EPGMapping[streamName]; ok && mappedID != "" {
+				epgID = mappedID
+			}
+			epgMappingLock.RUnlock()
+
+			extinf := fmt.Sprintf(`#EXTINF:-1 tvg-id="%s" tvg-name="%s",%s`, epgID, streamName, streamName)
+			m3uLines = append(m3uLines, extinf)
+
+			proxyURL := fmt.Sprintf("http://%s:%d/%s/%s.ts", proxyHost, ProxyPort, provider.SourceID, streamID)
+			m3uLines = append(m3uLines, proxyURL)
 		}
 
 		m3uContent := strings.Join(m3uLines, "\n")

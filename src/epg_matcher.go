@@ -12,8 +12,76 @@ import (
 	"strings"
 )
 
-// FetchEPGChannelIDs downloads an XMLTV file (supports .gz) and returns a map of tvg-id -> display-name
+// FetchEPGChannelIDs downloads EPG channels. Supports .xml, .xml.gz, .txt, or a directory URL (ends with /) to scrape all .txt files.
 func FetchEPGChannelIDs(epgUrl string) (map[string]string, error) {
+	if strings.HasSuffix(epgUrl, "/") {
+		return fetchAllTxtFromDirectory(epgUrl)
+	}
+	if strings.HasSuffix(epgUrl, ".txt") {
+		return fetchTxtEPG(epgUrl)
+	}
+	return fetchXmlEPG(epgUrl)
+}
+
+func fetchTxtEPG(url string) (map[string]string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	channels := make(map[string]string)
+	lines := strings.Split(string(body), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "--") && !strings.HasPrefix(line, "202") {
+			channels[line] = line
+		}
+	}
+	return channels, nil
+}
+
+func fetchAllTxtFromDirectory(dirUrl string) (map[string]string, error) {
+	resp, err := http.Get(dirUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	
+	html := string(body)
+	channels := make(map[string]string)
+	
+	// simple manual parsing for href="...txt"
+	parts := strings.Split(html, `href="`)
+	for i := 1; i < len(parts); i++ {
+		endIdx := strings.Index(parts[i], `"`)
+		if endIdx != -1 {
+			link := parts[i][:endIdx]
+			if strings.HasSuffix(link, ".txt") {
+				// download this txt
+				txtMap, err := fetchTxtEPG(dirUrl + link)
+				if err == nil {
+					for k, v := range txtMap {
+						channels[k] = v
+					}
+				}
+			}
+		}
+	}
+	return channels, nil
+}
+
+func fetchXmlEPG(epgUrl string) (map[string]string, error) {
 	resp, err := http.Get(epgUrl)
 	if err != nil {
 		return nil, err

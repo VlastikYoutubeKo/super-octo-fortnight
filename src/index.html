@@ -479,14 +479,21 @@ function Playlist() {
   return `<div class="card">
     <h3>Build M3U Playlist</h3>
     <div class="form-group">
-      <label>Select Provider</label>
+      <label>Select Account (by Source ID)</label>
       <select id="pl-provider" onchange="loadPlaylistCategories(this.value)">
-        <option value="">-- Choose Provider --</option>
-        ${pvs.map(([id, p]) => `<option value="${id}">${p.name}</option>`).join('')}
+        <option value="">-- Choose Account --</option>
+        ${pvs.map(([id, p]) => `<option value="${id}">[${p.source_id}] ${p.name} (${p.username})</option>`).join('')}
       </select>
     </div>
     <div id="pl-cats" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-bottom: 20px;"></div>
-    <button onclick="downloadBulkPlaylist()">${icons.download} Download M3U</button>
+    
+    <div class="form-group" style="margin-top:20px; padding-top:20px; border-top:1px solid var(--border)">
+      <label>Automatic EPG Matching (Optional)</label>
+      <p style="font-size:12px; color:var(--text-muted); margin-bottom:8px">If you provide an EPG URL, the system will use AI to automatically match new channels before downloading.</p>
+      <input type="text" id="pl-epg-url" placeholder="https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz" value="https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz">
+    </div>
+
+    <button onclick="downloadBulkPlaylist()">${icons.download} Generate & Download M3U</button>
   </div>`;
 }
 
@@ -504,10 +511,18 @@ async function loadPlaylistCategories(pid) {
 
 function downloadBulkPlaylist() {
   const pid = document.getElementById('pl-provider').value;
-  if (!pid) { alert('Select provider'); return; }
+  if (!pid) { alert('Select account'); return; }
   const checks = Array.from(document.querySelectorAll('.pl-cat-check:checked')).map(c => c.value);
   if (checks.length === 0) { alert('Select at least one category'); return; }
-  window.open(API + '/playlist/bulk.m3u?provider=' + encodeURIComponent(pid) + '&categories=' + encodeURIComponent(checks.join(',')), '_blank');
+  
+  const epgUrl = document.getElementById('pl-epg-url').value.trim();
+  let url = API + '/playlist/bulk.m3u?provider=' + encodeURIComponent(pid) + '&categories=' + encodeURIComponent(checks.join(','));
+  if (epgUrl) {
+    url += '&epg_url=' + encodeURIComponent(epgUrl);
+    alert('Generating playlist with Auto-EPG...\\nThis may take 10-30 seconds if AI needs to match new channels.\\nPlease wait for the download to start.');
+  }
+  
+  window.open(url, '_blank');
 }
 
 function Epg() {

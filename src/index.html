@@ -474,12 +474,92 @@ function copyUrl(url, event) {
   }).catch(() => prompt('Copy this URL:', url));
 }
 
+function Playlist() {
+  const pvs = Object.entries(S.config.xtream_providers || {});
+  return `<div class="card">
+    <h3>Build M3U Playlist</h3>
+    <div class="form-group">
+      <label>Select Provider</label>
+      <select id="pl-provider" onchange="loadPlaylistCategories(this.value)">
+        <option value="">-- Choose Provider --</option>
+        ${pvs.map(([id, p]) => `<option value="${id}">${p.name}</option>`).join('')}
+      </select>
+    </div>
+    <div id="pl-cats" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-bottom: 20px;"></div>
+    <button onclick="downloadBulkPlaylist()">${icons.download} Download M3U</button>
+  </div>`;
+}
+
+async function loadPlaylistCategories(pid) {
+  if (!pid) return;
+  const r = await get('/xtream/providers/' + pid + '/categories?type=live');
+  const cats = r.categories || [];
+  const el = document.getElementById('pl-cats');
+  el.innerHTML = cats.map(c => `
+    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; background:rgba(0,0,0,0.2); padding:10px; border-radius:6px; margin:0;">
+      <input type="checkbox" class="pl-cat-check" value="${c.id}"> ${c.name}
+    </label>
+  `).join('');
+}
+
+function downloadBulkPlaylist() {
+  const pid = document.getElementById('pl-provider').value;
+  if (!pid) { alert('Select provider'); return; }
+  const checks = Array.from(document.querySelectorAll('.pl-cat-check:checked')).map(c => c.value);
+  if (checks.length === 0) { alert('Select at least one category'); return; }
+  window.open(API + '/playlist/bulk.m3u?provider=' + encodeURIComponent(pid) + '&categories=' + encodeURIComponent(checks.join(',')), '_blank');
+}
+
+function Epg() {
+  return `<div class="card">
+    <h3>AI EPG Matcher</h3>
+    <p style="color:var(--text-muted); margin-bottom: 15px; font-size:13px;">Automatically map raw IPTV channel names to the correct tvg-id using Gemini AI.</p>
+    
+    <div class="form-group">
+      <label>EPG URL (e.g. https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz)</label>
+      <input type="text" id="epg-url" placeholder="https://..." value="https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz">
+    </div>
+    
+    <div class="form-group">
+      <label>Raw Channels to match (one per line)</label>
+      <textarea id="epg-channels" rows="10" placeholder="Nova Action HD\nPrima COOL FHD"></textarea>
+    </div>
+    
+    <button onclick="matchEpg()" id="match-btn">🤖 Auto-Match via AI</button>
+    <div id="epg-result" style="margin-top: 20px; font-family:monospace; white-space:pre-wrap; font-size:12px;"></div>
+  </div>`;
+}
+
+async function matchEpg() {
+  const url = document.getElementById('epg-url').value.trim();
+  const rawChannels = document.getElementById('epg-channels').value.split('\\n').map(c => c.trim()).filter(c => c);
+  if (!url || rawChannels.length === 0) { alert('Fill EPG URL and at least one channel'); return; }
+  
+  const btn = document.getElementById('match-btn');
+  btn.disabled = true;
+  btn.innerHTML = '🤖 Matching... this can take a moment';
+  document.getElementById('epg-result').innerHTML = 'Waiting for AI response...';
+  
+  try {
+    const res = await post('/epg/match', { epg_url: url, channels: rawChannels });
+    if (res.error) {
+      document.getElementById('epg-result').innerHTML = '<span style="color:red">' + res.error + '</span>';
+    } else {
+      document.getElementById('epg-result').innerHTML = '<span style="color:var(--success)">Saved! Matched: ' + res.matched_count + '</span><br><br>' + JSON.stringify(res.matches, null, 2);
+    }
+  } catch(e) {
+    document.getElementById('epg-result').innerHTML = '<span style="color:red">Error: ' + e.message + '</span>';
+  }
+  btn.disabled = false;
+  btn.innerHTML = '🤖 Auto-Match via AI';
+}
+
 function render() {
   const a = document.getElementById('app');
   if (S.loading && !S.status) { a.innerHTML = '<div class="loading">Connecting to API...</div>'; return; }
   if (S.error) { a.innerHTML = '<div class="error" style="font-size:15px"><strong>Connection Error:</strong> ' + S.error + '</div>'; return; }
   
-  const tabs = ['dashboard', 'sources', 'xtream'];
+  const tabs = ['dashboard', 'sources', 'xtream', 'playlist', 'epg'];
   a.innerHTML = `
     <div class="tabs">
       ${tabs.map(t => `<button class="tab ${S.tab === t ? 'active' : ''}" onclick="S.tab='${t}';render()">${t.charAt(0).toUpperCase() + t.slice(1)}</button>`).join('')}
@@ -487,6 +567,8 @@ function render() {
     <div class="tab-content ${S.tab === 'dashboard' ? 'active' : ''}">${Dashboard()}</div>
     <div class="tab-content ${S.tab === 'sources' ? 'active' : ''}">${Sources()}</div>
     <div class="tab-content ${S.tab === 'xtream' ? 'active' : ''}">${Xtream()}</div>
+    <div class="tab-content ${S.tab === 'playlist' ? 'active' : ''}">${Playlist()}</div>
+    <div class="tab-content ${S.tab === 'epg' ? 'active' : ''}">${Epg()}</div>
   `;
 }
 

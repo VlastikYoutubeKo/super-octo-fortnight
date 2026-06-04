@@ -47,6 +47,7 @@ type AppConfig struct {
 	Ppproxies       []string            `json:"ppproxies"`
 	AllowedIPs      []string            `json:"allowed_ips"`
 	AllowedDomains  []string            `json:"allowed_domains"`
+	GeminiAPIKey    string              `json:"gemini_api_key"`
 }
 
 var (
@@ -59,6 +60,10 @@ var (
 	// Global Channel Name Cache (SourceID:ChannelID -> Name)
 	ChannelNames     = make(map[string]string)
 	channelNamesLock sync.RWMutex
+	
+	// EPG Mapping (Stream Name -> tvg-id)
+	EPGMapping       = make(map[string]string)
+	epgMappingLock   sync.RWMutex
 
 	cooldowns     = make(map[string]time.Time)
 	cooldownsLock sync.RWMutex
@@ -90,6 +95,7 @@ func main() {
 
 	loadConfig()
 	detectXtream()
+	loadEpgMapping()
 	
 	// Start background channel name refresher
 	go refreshChannelNamesLoop()
@@ -99,6 +105,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	setupAPIRoutes(mux)
+	setupM3URoutes(mux)
 
 	go func() {
 		log.Printf("API running on :%d", APIPort)
@@ -169,6 +176,34 @@ func saveConfig() {
 	} else {
 		log.Printf("Config saved to config.json")
 	}
+}
+
+func loadEpgMapping() {
+	mappingFile := filepath.Join(scriptDir, "epg_mapping.json")
+	file, err := os.Open(mappingFile)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	epgMappingLock.Lock()
+	defer epgMappingLock.Unlock()
+	json.NewDecoder(file).Decode(&EPGMapping)
+	log.Printf("Loaded %d EPG mappings", len(EPGMapping))
+}
+
+func saveEpgMapping() {
+	mappingFile := filepath.Join(scriptDir, "epg_mapping.json")
+	file, err := os.Create(mappingFile)
+	if err != nil {
+		log.Printf("Failed to create epg mapping file: %v", err)
+		return
+	}
+	defer file.Close()
+	
+	epgMappingLock.RLock()
+	defer epgMappingLock.RUnlock()
+	json.NewEncoder(file).Encode(EPGMapping)
 }
 
 func getProxies() []string {

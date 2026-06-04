@@ -147,6 +147,7 @@ func startProducer(s *Stream) {
 				cmd = exec.CommandContext(ctx, cmdName, args...)
 				stdout, err := cmd.StdoutPipe()
 				if err != nil {
+					log.Printf("Failed to pipe source #%d [%s] (%s): %v", idx, s.Key, srcUrl, err)
 					cancel()
 					time.Sleep(2 * time.Second)
 					idx++
@@ -155,6 +156,7 @@ func startProducer(s *Stream) {
 				stdoutReader = stdout
 				
 				if err := cmd.Start(); err != nil {
+					log.Printf("Failed to start source #%d [%s] (%s): %v", idx, s.Key, srcUrl, err)
 					cancel()
 					time.Sleep(2 * time.Second)
 					idx++
@@ -184,7 +186,7 @@ func startProducer(s *Stream) {
 
 				resp, err := client.Do(req)
 				if err != nil {
-					log.Printf("Failed to fetch source #%d [%s]: %v", idx, s.Key, err)
+					log.Printf("Failed to fetch source #%d [%s] (%s): %v", idx, s.Key, srcUrl, err)
 					cancel()
 					time.Sleep(2 * time.Second)
 					idx++
@@ -192,7 +194,7 @@ func startProducer(s *Stream) {
 				}
 
 				if resp.StatusCode != 200 {
-					log.Printf("Source #%d [%s] returned HTTP %d", idx, s.Key, resp.StatusCode)
+					log.Printf("Source #%d [%s] (%s) returned HTTP %d", idx, s.Key, srcUrl, resp.StatusCode)
 					resp.Body.Close()
 					cancel()
 					time.Sleep(2 * time.Second)

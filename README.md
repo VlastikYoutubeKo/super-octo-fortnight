@@ -70,8 +70,26 @@ The Go version is distributed as a single, standalone executable.
       "http://server:port/live/user/pass/{channel_id}.ts"
     ]
   },
+  "xtream_providers": {
+    "provider_id": {
+      "name": "provider.com",
+      "url": "http://provider.com:80",
+      "username": "user",
+      "password": "password",
+      "source_id": "source_id"
+    }
+  },
   "fallback_mode": false,
   "auto_fallback": true,
+  "engine": "http",
+  "tvheadend": {
+    "url": "http://127.0.0.1:9981",
+    "username": "admin",
+    "password": "password"
+  },
+  "proxies": [
+    "http://user:pass@1.2.3.4:1337"
+  ],
   "allowed_ips": ["127.0.0.1", "192.168.1.5"],
   "allowed_domains": ["tvh.yourdomain.com"]
 }
@@ -84,11 +102,16 @@ The Go version is distributed as a single, standalone executable.
 **Network Settings:**
 - Stream proxy port: `9000`
 - REST API port: `9005`
+- `proxies` / `ppproxies`: Array of HTTP proxies used for requests
+- `engine`: Engine selection (e.g. `http`)
 
 **TVHeadend Settings:**
 - `url` - TVHeadend server URL
 - `username` - TVHeadend username
 - `password` - TVHeadend password
+
+**Xtream Providers:**
+- Integrates with Xtream Codes providers automatically, storing credentials securely.
 
 ## Usage
 

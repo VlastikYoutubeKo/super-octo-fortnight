@@ -21,9 +21,13 @@ var (
 		Timeout: 300 * time.Second,
 	}
 	
-	// Map: SourceID:NormalizedName -> CurrentStreamID
-	CurrentIDs      = make(map[string]string)
+	// Map: SourceID:NormalizedName -> []CurrentStreamIDs
+	CurrentIDs      = make(map[string][]string)
 	currentIDsLock  sync.RWMutex
+
+	// Map: SourceID:StreamID -> true (to prevent overwriting valid IDs)
+	ValidIDs        = make(map[string]bool)
+	validIDsLock    sync.RWMutex
 )
 
 func refreshChannelNamesLoop() {
@@ -43,27 +47,41 @@ func refreshChannelNamesLoop() {
 		}
 
 		anySuccess := false
+		newValidIDs := make(map[string]bool)
+
 		for _, p := range providers {
 			log.Printf("Refreshing channel names from provider: %s", p.Name)
 			names, err := fetchLiveStreams(p)
 			if err == nil && len(names) > 0 {
 				channelNamesLock.Lock()
 				currentIDsLock.Lock()
+				
 				for id, name := range names {
 					key := fmt.Sprintf("%s:%s", p.SourceID, id)
 					ChannelNames[key] = name
+					newValidIDs[key] = true
 					
 					norm := NormalizeChannelName(name)
 					if norm != "" {
 						mappingKey := fmt.Sprintf("%s:%s", p.SourceID, norm)
-						CurrentIDs[mappingKey] = id
+						
+						exists := false
+						for _, existing := range CurrentIDs[mappingKey] {
+							if existing == id {
+								exists = true
+								break
+							}
+						}
+						if !exists {
+							CurrentIDs[mappingKey] = append(CurrentIDs[mappingKey], id)
+						}
 					}
 				}
+				
 				currentIDsLock.Unlock()
 				channelNamesLock.Unlock()
 				log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
 				anySuccess = true
-				saveNamesCache() // Save immediately
 			} else if err != nil {
 				log.Printf("Failed to refresh names from %s: %v", p.Name, err)
 			}
@@ -71,6 +89,12 @@ func refreshChannelNamesLoop() {
 		}
 
 		if anySuccess {
+			validIDsLock.Lock()
+			// Only update if we successfully fetched, so we don't wipe out valid IDs on network error
+			ValidIDs = newValidIDs
+			validIDsLock.Unlock()
+			
+			saveNamesCache() // Save immediately
 			time.Sleep(1 * time.Hour) // Refresh every hour
 		} else {
 			time.Sleep(5 * time.Minute) // Retry sooner if all failed
@@ -81,12 +105,15 @@ func refreshChannelNamesLoop() {
 func saveNamesCache() {
 	channelNamesLock.RLock()
 	currentIDsLock.RLock()
+	validIDsLock.RLock()
+	defer validIDsLock.RUnlock()
 	defer currentIDsLock.RUnlock()
 	defer channelNamesLock.RUnlock()
 
 	data := map[string]interface{}{
 		"names": ChannelNames,
 		"ids":   CurrentIDs,
+		"valid": ValidIDs,
 	}
 	
 	cacheFile := filepath.Join(scriptDir, "names_cache.json")
@@ -110,7 +137,8 @@ func loadNamesCache() {
 
 	var data struct {
 		Names map[string]string `json:"names"`
-		IDs   map[string]string `json:"ids"`
+		IDs   map[string][]string `json:"ids"`
+		Valid map[string]bool   `json:"valid"`
 	}
 	
 	if err := json.NewDecoder(file).Decode(&data); err == nil {
@@ -125,7 +153,14 @@ func loadNamesCache() {
 			CurrentIDs[k] = v
 		}
 		currentIDsLock.Unlock()
-		log.Printf("Loaded %d names and %d ID mappings from cache", len(data.Names), len(data.IDs))
+
+		validIDsLock.Lock()
+		for k, v := range data.Valid {
+			ValidIDs[k] = v
+		}
+		validIDsLock.Unlock()
+		
+		log.Printf("Loaded %d names, %d ID mappings, and %d valid IDs from cache", len(data.Names), len(data.IDs), len(data.Valid))
 	}
 }
 
@@ -158,7 +193,15 @@ func fetchLiveStreams(p Provider) (map[string]string, error) {
 
 	names := make(map[string]string)
 	for _, s := range streams {
-		idStr := fmt.Sprintf("%v", s.ID)
+		var idStr string
+		switch v := s.ID.(type) {
+		case float64:
+			idStr = fmt.Sprintf("%.0f", v)
+		case string:
+			idStr = v
+		default:
+			idStr = fmt.Sprintf("%v", v)
+		}
 		names[idStr] = s.Name
 	}
 	return names, nil

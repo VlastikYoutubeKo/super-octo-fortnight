@@ -383,10 +383,21 @@ func setupAPIRoutes(mux *http.ServeMux) {
 
 		for _, item := range streamsData {
 			if m, ok := item.(map[string]interface{}); ok {
-				streamID := fmt.Sprintf("%v", m["stream_id"])
-				if streamID == "<nil>" {
-					streamID = fmt.Sprintf("%v", m["id"])
+				var streamID string
+				if val, ok := m["stream_id"]; ok && val != nil {
+					if f, isFloat := val.(float64); isFloat {
+						streamID = fmt.Sprintf("%.0f", f)
+					} else {
+						streamID = fmt.Sprintf("%v", val)
+					}
+				} else if val, ok := m["id"]; ok && val != nil {
+					if f, isFloat := val.(float64); isFloat {
+						streamID = fmt.Sprintf("%.0f", f)
+					} else {
+						streamID = fmt.Sprintf("%v", val)
+					}
 				}
+				
 				streamName := fmt.Sprintf("%v", m["name"])
 				epgID := fmt.Sprintf("%v", m["epg_channel_id"])
                 if epgID == "<nil>" { epgID = "" }

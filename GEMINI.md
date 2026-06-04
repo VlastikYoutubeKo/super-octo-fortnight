@@ -3,6 +3,7 @@
 ## Architecture & Workflows
 - **Purpose**: A production-ready IPTV proxy system acting as a middleman between TVHeadend and upstream Xtream Codes sources.
 - **Language**: Initially written in Python (`proxy.py`), later fully rewritten and migrated to Go for high concurrency and performance without the GIL limitations.
+- **Project Structure**: Go source code (e.g., `main.go`, `api.go`, `stream.go`) is located entirely in the `src/` directory, while compiled binaries, configuration files, and deployment scripts are kept in the project root.
 - **Ports**: Runs a stream proxy on `9000` and a REST API / Web UI on `9005`.
 - **Stream Producer Strategy**: Uses `ffmpeg` to pull upstream sources, copy the codecs (`-c copy`), correct timestamps (`-avoid_negative_ts make_zero`), and pipe raw MPEG-TS data.
 - **Client Consumer Strategy**: The Go proxy uses a memory buffer queue (chan `[]byte` of size 2000 per client) combined with a rolling history (`recentChunks`) to allow instant playback and protect against slow clients.
@@ -16,3 +17,4 @@
 ## Release Strategy
 - Binaries are compiled for `linux/amd64`, `linux/arm64`, `windows/amd64`, and `windows/arm64`.
 - They are automatically built and published to GitHub Releases via a `.github/workflows/release.yml` GitHub Action whenever a new tag (e.g., `v1.x.x`) is pushed to the repository.
+- **Git Tags**: When creating Git tags for this project, always use annotated tags (`git tag -a`) and include a concise summary of the key changes since the last version in the tag message.

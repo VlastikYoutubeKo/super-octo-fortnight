@@ -77,23 +77,43 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	key := fmt.Sprintf("%s:%s", sourceID, cleanID)
-	
-	// === AUTO-DISCOVERY OF SCRAMBLED IDs ===
-	// If the provider changed IDs, we try to find the new ID by name.
+
+	// === MULTI-ID AUTO-DISCOVERY ===
+	// Instead of rewriting the stream key and losing TVH tracking, we collect ALL known IDs
+	// for this channel's name. We'll generate local source URLs for every single ID.
+	// The stream producer will then naturally test them all and play the first one that returns 200 OK.
+	var targetIDs []string
+	targetIDs = append(targetIDs, cleanID)
+
 	channelNamesLock.RLock()
 	originalName := ChannelNames[key]
 	channelNamesLock.RUnlock()
 	
 	if originalName != "" {
 		norm := NormalizeChannelName(originalName)
-		currentIDsLock.RLock()
-		currentID := CurrentIDs[fmt.Sprintf("%s:%s", sourceID, norm)]
-		currentIDsLock.RUnlock()
 		
-		if currentID != "" && currentID != cleanID {
-			log.Printf("ID Discovery: Stream %s was renamed/scrambled. Old ID: %s -> New ID: %s (Name: %s)", sourceID, cleanID, currentID, originalName)
-			cleanID = currentID
-			key = fmt.Sprintf("%s:%s", sourceID, cleanID)
+		currentIDsLock.RLock()
+		altIDs := CurrentIDs[fmt.Sprintf("%s:%s", sourceID, norm)]
+		for _, altID := range altIDs {
+			if altID != cleanID {
+				targetIDs = append(targetIDs, altID)
+			}
+		}
+		currentIDsLock.RUnlock()
+
+		if len(targetIDs) > 1 {
+			// Sort numerically descending to try the NEWEST stream ID first
+			for i := 0; i < len(targetIDs)-1; i++ {
+				for j := i + 1; j < len(targetIDs); j++ {
+					var id1, id2 int
+					fmt.Sscanf(targetIDs[i], "%d", &id1)
+					fmt.Sscanf(targetIDs[j], "%d", &id2)
+					if id2 > id1 {
+						targetIDs[i], targetIDs[j] = targetIDs[j], targetIDs[i]
+					}
+				}
+			}
+			log.Printf("ID Discovery: Stream %s ('%s') has %d possible IDs. Trying newest first: %v", key, originalName, len(targetIDs), targetIDs)
 		}
 	}
 
@@ -134,14 +154,16 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		if fallbackMode {
 			urls = []string{FallbackURL}
 		} else {
-			// 1. Add local sources
-			for _, u := range sourceUrls {
-				finalUrl := strings.Replace(u, "{channel_id}", cleanID, -1)
-				if internalM3u8 && strings.HasSuffix(finalUrl, ".ts") {
-					m3u8Url := strings.TrimSuffix(finalUrl, ".ts") + ".m3u8"
-					urls = append(urls, m3u8Url)
+			// 1. Add local sources for ALL target IDs
+			for _, tID := range targetIDs {
+				for _, u := range sourceUrls {
+					finalUrl := strings.Replace(u, "{channel_id}", tID, -1)
+					if internalM3u8 && strings.HasSuffix(finalUrl, ".ts") {
+						m3u8Url := strings.TrimSuffix(finalUrl, ".ts") + ".m3u8"
+						urls = append(urls, m3u8Url)
+					}
+					urls = append(urls, finalUrl)
 				}
-				urls = append(urls, finalUrl)
 			}
 
 			if autoFallback {

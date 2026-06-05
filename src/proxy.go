@@ -193,9 +193,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		
 		configLock.RLock()
 		autoFb := Config.AutoFallback
+		fallbackMode := Config.FallbackMode
 		configLock.RUnlock()
 		
-		if name != "" {
+		if name != "" && !fallbackMode {
 			go func(stream *Stream, chName string) {
 				log.Printf("Smart Proxy (Background): Searching alternatives for '%s' (%s)", chName, stream.Key)
 				alts := searchGlobalAlternatives(chName)

@@ -489,8 +489,8 @@ function Playlist() {
     
     <div class="form-group" style="margin-top:20px; padding-top:20px; border-top:1px solid var(--border)">
       <label>Automatic EPG Matching (Optional)</label>
-      <p style="font-size:12px; color:var(--text-muted); margin-bottom:8px">If you provide an EPG URL, the system will use AI to automatically match new channels before downloading.</p>
-      <input type="text" id="pl-epg-url" placeholder="https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz" value="https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz">
+      <p style="font-size:12px; color:var(--text-muted); margin-bottom:8px">If you provide an EPG Directory URL, the system will scrape all .txt files and use AI to automatically match new channels.</p>
+      <input type="text" id="pl-epg-url" placeholder="https://epgshare01.online/epgshare01/" value="https://epgshare01.online/epgshare01/">
     </div>
 
     <button onclick="downloadBulkPlaylist()">${icons.download} Generate & Download M3U</button>
@@ -498,15 +498,21 @@ function Playlist() {
 }
 
 async function loadPlaylistCategories(pid) {
-  if (!pid) return;
-  const r = await get('/xtream/providers/' + pid + '/categories?type=live');
-  const cats = r.categories || [];
   const el = document.getElementById('pl-cats');
-  el.innerHTML = cats.map(c => `
-    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; background:rgba(0,0,0,0.2); padding:10px; border-radius:6px; margin:0;">
-      <input type="checkbox" class="pl-cat-check" value="${c.id}"> ${c.name}
-    </label>
-  `).join('');
+  if (!pid) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="loading" style="grid-column: 1 / -1; padding: 20px;">Fetching categories from provider... this may take up to 60 seconds if the provider is slow.</div>';
+  
+  try {
+    const r = await get('/xtream/providers/' + pid + '/categories?type=live');
+    const cats = r.categories || [];
+    el.innerHTML = cats.map(c => `
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; background:rgba(0,0,0,0.2); padding:10px; border-radius:6px; margin:0;">
+        <input type="checkbox" class="pl-cat-check" value="${c.id}"> ${c.name}
+      </label>
+    `).join('');
+  } catch(e) {
+    el.innerHTML = '<div class="error" style="grid-column: 1 / -1;">Failed to load categories: ' + e.message + '</div>';
+  }
 }
 
 function downloadBulkPlaylist() {

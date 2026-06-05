@@ -55,6 +55,9 @@ func setupM3URoutes(mux *http.ServeMux) {
 		epgMappingLock.RLock()
 		for _, m := range allStreams {
 			streamName := fmt.Sprintf("%v", m["name"])
+			if IsCategorySeparator(streamName) {
+				continue
+			}
 			if _, ok := EPGMapping[streamName]; !ok {
 				unmapped = append(unmapped, streamName)
 			}
@@ -111,6 +114,11 @@ func setupM3URoutes(mux *http.ServeMux) {
 			}
 
 			streamName := fmt.Sprintf("%v", m["name"])
+			
+			if IsCategorySeparator(streamName) {
+				continue
+			}
+
 			epgID := fmt.Sprintf("%v", m["epg_channel_id"])
 			if epgID == "<nil>" {
 				epgID = ""

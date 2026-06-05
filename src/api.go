@@ -399,6 +399,10 @@ func setupAPIRoutes(mux *http.ServeMux) {
 				}
 				
 				streamName := fmt.Sprintf("%v", m["name"])
+				if IsCategorySeparator(streamName) {
+					continue
+				}
+
 				epgID := fmt.Sprintf("%v", m["epg_channel_id"])
                 if epgID == "<nil>" { epgID = "" }
 

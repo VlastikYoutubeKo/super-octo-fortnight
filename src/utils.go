@@ -71,3 +71,26 @@ func CleanChannelNameForM3U(name string) string {
 	}
 	return clean
 }
+
+// IsCategorySeparator detects dummy channels used by IPTV providers as visual separators in apps.
+func IsCategorySeparator(name string) bool {
+	// Look for repetitive ascii chars (===, ***, ---) or special unicode stars/blocks
+	reSeparator := regexp.MustCompile(`([=*\-~|]{3,}|[✶⋆★☆✦✧✩✪✫✬✭✮✯✰═░▒▓█])`)
+	if reSeparator.MatchString(name) {
+		return true
+	}
+
+	clean := strings.TrimSpace(name)
+	if len(clean) > 2 {
+		first := clean[0]
+		last := clean[len(clean)-1]
+		// e.g. "= SPORT =" or "- NEWS -"
+		if (first == '=' && last == '=') || 
+		   (first == '-' && last == '-') ||
+		   (first == '~' && last == '~') {
+			return true
+		}
+	}
+
+	return false
+}

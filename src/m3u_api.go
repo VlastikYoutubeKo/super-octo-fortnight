@@ -47,6 +47,8 @@ func setupM3URoutes(mux *http.ServeMux) {
 
 		var allStreams []map[string]interface{}
 		catIDs := strings.Split(categories, ",")
+		seenNames := make(map[string]bool)
+		
 		for _, catID := range catIDs {
 			catID = strings.TrimSpace(catID)
 			if catID == "" {
@@ -57,7 +59,13 @@ func setupM3URoutes(mux *http.ServeMux) {
 			if streamsData != nil {
 				for _, item := range streamsData {
 					if m, ok := item.(map[string]interface{}); ok {
-						allStreams = append(allStreams, m)
+						streamName := fmt.Sprintf("%v", m["name"])
+						norm := NormalizeChannelName(streamName)
+						
+						if !seenNames[norm] {
+							seenNames[norm] = true
+							allStreams = append(allStreams, m)
+						}
 					}
 				}
 			}

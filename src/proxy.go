@@ -102,8 +102,9 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		currentIDsLock.RUnlock()
 
 		if len(targetIDs) > 1 {
-			// Sort numerically descending to try the NEWEST stream ID first
-			for i := 0; i < len(targetIDs)-1; i++ {
+			// Sort numerically descending to try the NEWEST stream ID first, 
+			// BUT ALWAYS keep the explicitly requested cleanID at index 0!
+			for i := 1; i < len(targetIDs)-1; i++ {
 				for j := i + 1; j < len(targetIDs); j++ {
 					var id1, id2 int
 					fmt.Sscanf(targetIDs[i], "%d", &id1)
@@ -113,7 +114,7 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			log.Printf("ID Discovery: Stream %s ('%s') has %d possible IDs. Trying newest first: %v", key, originalName, len(targetIDs), targetIDs)
+			log.Printf("ID Discovery: Stream %s ('%s') has %d possible IDs. Trying requested %s first, then newest alternates: %v", key, originalName, len(targetIDs), cleanID, targetIDs)
 		}
 	}
 

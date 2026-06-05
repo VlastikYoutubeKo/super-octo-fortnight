@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
-	"math/rand"
 	"time"
 )
 
@@ -292,14 +290,7 @@ func xtreamAPI(provider Provider, action string, params map[string]string) inter
 
 	for i := 0; i < maxRetries; i++ {
 		client := &http.Client{Timeout: 60 * time.Second}
-		// Use proxy for all attempts except the very last one, which will act as a direct fallback
-		if len(proxies) > 0 && i < maxRetries-1 {
-			client.Timeout = 8 * time.Second
-			proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))])
-			if err == nil {
-				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
-			}
-		}
+
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -425,13 +416,7 @@ func filterEpg(w http.ResponseWriter, provider Provider, categoryID string) {
 
 	for i := 0; i < maxRetries; i++ {
 		client := &http.Client{Timeout: 60 * time.Second}
-		if len(proxies) > 0 && i < maxRetries-1 {
-			client.Timeout = 8 * time.Second
-			proxyUrl, parseErr := url.Parse(proxies[rand.Intn(len(proxies))])
-			if parseErr == nil {
-				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
-			}
-		}
+
 
 		resp, err = client.Do(req)
 		if err != nil {

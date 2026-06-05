@@ -41,3 +41,33 @@ func NormalizeChannelName(name string) string {
 
 	return cleanName
 }
+
+// CleanChannelNameForM3U removes ugly tags like [1080p] or [EXTRA] and cleans up the string for display in the M3U playlist.
+func CleanChannelNameForM3U(name string) string {
+	if name == "" {
+		return ""
+	}
+	clean := name
+
+	// Remove anything in brackets or parentheses e.g. [1080p], (FHD), [EXTRA]
+	reTags := regexp.MustCompile(`(?i)\[.*?\]|\(.*?\)|<.*?>`)
+	clean = reTags.ReplaceAllString(clean, "")
+
+	// Fix up leftover artifacts like "PL-: " or "PL - :"
+	clean = strings.ReplaceAll(clean, "-:", "-")
+	clean = strings.ReplaceAll(clean, ":-", "-")
+	clean = strings.ReplaceAll(clean, " : ", " ")
+	clean = strings.ReplaceAll(clean, " -  ", " - ")
+
+	// Trim redundant spaces and colons/hyphens at the start/end
+	clean = strings.TrimSpace(clean)
+	clean = strings.Trim(clean, ":- ")
+	
+	// Collapse multiple spaces
+	clean = strings.Join(strings.Fields(clean), " ")
+	
+	if clean == "" {
+		return name
+	}
+	return clean
+}

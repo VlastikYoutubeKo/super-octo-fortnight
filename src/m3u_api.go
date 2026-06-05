@@ -118,7 +118,8 @@ func setupM3URoutes(mux *http.ServeMux) {
 			}
 			epgMappingLock.RUnlock()
 
-			extinf := fmt.Sprintf(`#EXTINF:-1 tvg-id="%s" tvg-name="%s",%s`, epgID, streamName, streamName)
+			displayName := CleanChannelNameForM3U(streamName)
+			extinf := fmt.Sprintf(`#EXTINF:-1 tvg-id="%s" tvg-name="%s",%s`, epgID, displayName, displayName)
 			m3uLines = append(m3uLines, extinf)
 
 			proxyURL := fmt.Sprintf("http://%s:%d/%s/%s.ts", proxyHost, ProxyPort, provider.SourceID, streamID)

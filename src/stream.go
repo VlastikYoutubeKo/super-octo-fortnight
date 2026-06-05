@@ -16,7 +16,7 @@ import (
 type Stream struct {
 	Key                 string
 	Urls                []string
-	Clients             map[chan []byte]bool
+	Clients             map[chan []byte]context.Context
 	Mu                  sync.RWMutex
 	CancelFunc          context.CancelFunc
 	LastDataTime        time.Time
@@ -282,11 +282,26 @@ func startProducer(s *Stream) {
 						}
 					}
 
-					// Send EVERY chunk to clients without dropping. Blocking send provides natural backpressure.
-					for ch := range s.Clients {
-						ch <- chunk
+					type clientCtx struct {
+						ch  chan []byte
+						ctx context.Context
+					}
+					var activeClients []clientCtx
+					for ch, ctx := range s.Clients {
+						activeClients = append(activeClients, clientCtx{ch: ch, ctx: ctx})
 					}
 					s.Mu.Unlock()
+
+					// Send EVERY chunk to clients outside the lock.
+					// Use blocking send to provide natural backpressure so ffmpeg doesn't blast local MP4s at 1000x speed.
+					// Listen to ctx.Done() so we don't block forever if a client dies.
+					for _, c := range activeClients {
+						select {
+						case c.ch <- chunk:
+						case <-c.ctx.Done():
+							// Client disconnected, drop chunk to avoid hanging the producer
+						}
+					}
 				}
 				
 				if err != nil {

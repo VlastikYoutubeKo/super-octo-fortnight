@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -172,14 +173,14 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		s = &Stream{Key: key, Urls: urls, Clients: make(map[chan []byte]bool), Created: time.Now(), LastDataTime: time.Now()}
+		s = &Stream{Key: key, Urls: urls, Clients: make(map[chan []byte]context.Context), Created: time.Now(), LastDataTime: time.Now()}
 		streams[key] = s
 	}
 	streamsLock.Unlock()
 
 	clientChan := make(chan []byte, BufferQueueSize)
 	s.Mu.Lock()
-	s.Clients[clientChan] = true
+	s.Clients[clientChan] = r.Context()
 	clientsCount := len(s.Clients)
 	s.Mu.Unlock()
 

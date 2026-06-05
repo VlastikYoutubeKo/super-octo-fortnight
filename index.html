@@ -28,21 +28,35 @@
             line-height: 1.6; 
             font-size: 15px; 
             -webkit-font-smoothing: antialiased; 
-            max-width: 800px; 
+            max-width: 900px; 
             margin: 0 auto; 
             padding: 40px 20px; 
         }
         .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 40px; border-bottom: 1px solid var(--border); padding-bottom: 20px; }
         h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
-        h2 { font-size: 20px; font-weight: 600; margin: 30px 0 15px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        h2 { font-size: 20px; font-weight: 600; margin: 40px 0 20px; border-bottom: 1px solid var(--border); padding-bottom: 10px; color: #fff; }
+        h3 { font-size: 16px; font-weight: 600; margin: 25px 0 10px; color: var(--accent); }
         p { margin-bottom: 15px; color: var(--text-muted); }
         ul { list-style: none; margin-bottom: 20px; }
-        li { padding: 10px 15px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; display: flex; align-items: center; }
-        li strong { color: #fff; margin-right: 8px; min-width: 130px; display: inline-block; }
+        li { padding: 10px 15px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; display: flex; align-items: flex-start; flex-direction: column; }
+        .feature-item { flex-direction: row; align-items: center; }
+        .feature-item strong { color: #fff; margin-right: 8px; min-width: 140px; display: inline-block; }
+        
+        .changelog-item { border-left: 3px solid var(--border); border-radius: 0 8px 8px 0; font-size: 14px; }
+        .changelog-item.feat { border-left-color: var(--success); }
+        .changelog-item.fix { border-left-color: var(--accent); }
+        .changelog-item.chore { border-left-color: var(--text-muted); }
+        
         code { background: rgba(0,0,0,0.4); color: var(--accent); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 13px; }
         pre { background: #000; padding: 20px; border-radius: var(--radius); border: 1px solid var(--border); overflow-x: auto; margin-bottom: 20px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.5); }
         pre code { background: transparent; padding: 0; color: #a5b4fc; font-size: 14px; }
         .badge { display: inline-block; background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+        
+        .tag { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 8px; font-weight: 600; text-transform: uppercase; }
+        .tag.feat { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .tag.fix { background: rgba(59, 130, 246, 0.2); color: var(--accent); border: 1px solid rgba(59, 130, 246, 0.3); }
+        .tag.chore { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.3); }
+        
         a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
         a:hover { color: var(--accent-hover); text-decoration: underline; }
         .footer { margin-top: 60px; text-align: center; font-size: 13px; color: #475569; border-top: 1px solid var(--border); padding-top: 20px; }
@@ -54,15 +68,39 @@
         <div class="badge">Go Production</div>
     </div>
     
-    <p>A production-ready IPTV proxy system acting as a middleman between TVHeadend and upstream Xtream Codes sources. Rewritten in Go for high concurrency and ultra-low latency.</p>
+    <p>A production-ready, ultra-low latency IPTV proxy system acting as an intelligent middleman between TVHeadend/VLC and upstream Xtream Codes providers. Completely rewritten in Go for extreme concurrency, eliminating Python's GIL limitations, and packed with an AI-driven smart EPG mapping system.</p>
     
     <h2>Key Features</h2>
     <ul>
-        <li><strong>High Performance:</strong> Zero GIL limitations, native Go concurrency.</li>
-        <li><strong>Low Latency:</strong> Optimized FFmpeg pipes and raw HTTP proxying.</li>
-        <li><strong>Resiliency:</strong> Automatic failover to backup sources and fallback video.</li>
-        <li><strong>Compatibility:</strong> Full support for <code>.m3u8</code> and <code>.ts</code> streams with VLC/TVH.</li>
-        <li><strong>Security:</strong> IP and Domain-based whitelisting.</li>
+        <li class="feature-item"><strong>High Performance:</strong> Zero GIL limitations, native Go concurrency.</li>
+        <li class="feature-item"><strong>AI-Powered EPG:</strong> Uses Gemini AI to map raw channel names to XMLTV EPG IDs automatically.</li>
+        <li class="feature-item"><strong>Resilient Failovers:</strong> Rotates HTTP proxy requests, falling back to direct connections.</li>
+        <li class="feature-item"><strong>M3U Sanitization:</strong> Automatically cleans up ugly tags from playlist channel names.</li>
+        <li class="feature-item"><strong>Hijacked TCP Pipes:</strong> Transmits raw MPEG-TS data directly onto sockets to prevent HTTP corruption.</li>
+    </ul>
+
+    <h2>Recent Changelog</h2>
+    
+    <h3>v1.5.0 - The Smart EPG Update</h3>
+    <ul>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Introduced AI M3U Bulk Playlist generation in the UI.</div></li>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Gemini 3.5-flash AI integration for automatic XMLTV EPG ID matching.</div></li>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added scraping support for bulk EPG text files and directories from epgshare01.</div></li>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Multi-API key rotation/fallback added to bypass Gemini free-tier rate limits.</div></li>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added an M3U Name Sanitizer that cleans ugly prefixes and tags from generated playlists.</div></li>
+        <li class="changelog-item fix"><div><span class="tag fix">Enhancement</span> UI categories are now sorted alphabetically for clean provider groupings.</div></li>
+        <li class="changelog-item fix"><div><span class="tag fix">Enhancement</span> Added auto-correction and fuzzy-matching logic to prevent Gemini AI from hallucinating fake EPG IDs.</div></li>
+        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Redesigned Xtream API fetcher to disable Webshare proxies for metadata calls, dropping timeouts down to instant direct connections.</div></li>
+        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Optimized the channel refresh background loop to group by <code>SourceID</code>, avoiding redundant fetching.</div></li>
+        <li class="changelog-item chore"><div><span class="tag chore">Chore</span> Root <code>index.html</code> updated with a unified dark mode design.</div></li>
+    </ul>
+
+    <h3>v1.4.x - The Core Proxy Polish</h3>
+    <ul>
+        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Completely aligned PCR and DTS in FFmpeg engine to fix TVHeadend packet drops.</div></li>
+        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Removed HTTP chunked transfer boundaries, sending raw MPEG-TS over raw TCP via <code>http.Hijacker</code>.</div></li>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added rapid failover functionality to blast through dead streams within 1s.</div></li>
+        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added internal fallback video when all providers are offline.</div></li>
     </ul>
 
     <h2>Quick Start</h2>
@@ -73,14 +111,9 @@ go build -o ../proxy_server *.go
 # Run the server
 ./proxy_server</code></pre>
 
-    <h2>API & Proxy Ports</h2>
-    <ul>
-        <li><strong>Proxy Server:</strong> Port <code>9000</code></li>
-        <li><strong>REST API / UI:</strong> Port <code>9005</code></li>
-    </ul>
-
     <div class="footer">
-        Documentation is available in <a href="README.md">README.md</a> and <a href="GEMINI.md">GEMINI.md</a>.
+        Documentation is available in <a href="README.md">README.md</a> and <a href="GEMINI.md">GEMINI.md</a>.<br><br>
+        Ported with ❤️ from Python to Go
     </div>
 </body>
 </html>

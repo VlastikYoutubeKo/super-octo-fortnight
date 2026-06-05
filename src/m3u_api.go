@@ -68,20 +68,29 @@ func setupM3URoutes(mux *http.ServeMux) {
 		if epgUrl != "" && len(unmapped) > 0 {
 			configLock.RLock()
 			apiKey := Config.GeminiAPIKey
+			ollamaUrl := Config.OllamaAPIUrl
+			ollamaKey := Config.OllamaAPIKey
+			ollamaModel := Config.OllamaModel
 			configLock.RUnlock()
 
-			if apiKey != "" {
+			if ollamaUrl != "" || apiKey != "" {
 				epgChannels, err := FetchEPGChannelIDs(epgUrl)
 				if err == nil {
-					// We might have many unmapped, Gemini might have limits. 
-					// For safety, we match all of them, but in production we'd chunk them.
-					apiKeys := strings.Split(apiKey, ",")
-					for i := range apiKeys {
-						apiKeys[i] = strings.TrimSpace(apiKeys[i])
+					var matched map[string]string
+					var matchErr error
+
+					if ollamaUrl != "" {
+						matched, matchErr = MatchWithOllama(ollamaUrl, ollamaKey, ollamaModel, unmapped, epgChannels)
+					} else {
+						apiKeys := strings.Split(apiKey, ",")
+						for i := range apiKeys {
+							apiKeys[i] = strings.TrimSpace(apiKeys[i])
+						}
+						matched, matchErr = MatchWithGemini(apiKeys, unmapped, epgChannels)
 					}
-					matched, err := MatchWithGemini(apiKeys, unmapped, epgChannels)
-					if err != nil {
-						fmt.Printf("Auto-EPG Gemini match failed: %v\nFalling back to purely offline fuzzy matching...\n", err)
+
+					if matchErr != nil {
+						fmt.Printf("Auto-EPG AI match failed: %v\nFalling back to purely offline fuzzy matching...\n", matchErr)
 						matched = make(map[string]string)
 						var allIDs []string
 						for id := range epgChannels {
@@ -170,10 +179,13 @@ func setupM3URoutes(mux *http.ServeMux) {
 
 		configLock.RLock()
 		apiKey := Config.GeminiAPIKey
+		ollamaUrl := Config.OllamaAPIUrl
+		ollamaKey := Config.OllamaAPIKey
+		ollamaModel := Config.OllamaModel
 		configLock.RUnlock()
 
-		if apiKey == "" {
-			http.Error(w, `{"error":"Gemini API Key is not configured in config.json"}`, 400)
+		if apiKey == "" && ollamaUrl == "" {
+			http.Error(w, `{"error":"No AI API Key or Ollama URL is configured in config.json"}`, 400)
 			return
 		}
 
@@ -183,14 +195,21 @@ func setupM3URoutes(mux *http.ServeMux) {
 			return
 		}
 
-		apiKeys := strings.Split(apiKey, ",")
-		for i := range apiKeys {
-			apiKeys[i] = strings.TrimSpace(apiKeys[i])
+		var matched map[string]string
+		var matchErr error
+
+		if ollamaUrl != "" {
+			matched, matchErr = MatchWithOllama(ollamaUrl, ollamaKey, ollamaModel, req.Channels, epgChannels)
+		} else {
+			apiKeys := strings.Split(apiKey, ",")
+			for i := range apiKeys {
+				apiKeys[i] = strings.TrimSpace(apiKeys[i])
+			}
+			matched, matchErr = MatchWithGemini(apiKeys, req.Channels, epgChannels)
 		}
 
-		matched, err := MatchWithGemini(apiKeys, req.Channels, epgChannels)
-		if err != nil {
-			fmt.Printf("Manual AI Match failed: %v. Using purely offline fallback.\n", err)
+		if matchErr != nil {
+			fmt.Printf("Manual AI Match failed: %v. Using purely offline fallback.\n", matchErr)
 			matched = make(map[string]string)
 			var allIDs []string
 			for id := range epgChannels {

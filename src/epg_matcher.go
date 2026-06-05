@@ -261,10 +261,15 @@ Channels to match:
 
 	log.Printf("Gemini AI Match Response:\n%s\n", responseText)
 
+	return parseJSONResponse(responseText, epgChannels)
+}
+
+// parseJSONResponse processes the raw JSON string from AI models
+func parseJSONResponse(responseText string, epgChannels map[string]string) (map[string]string, error) {
 	var parsedResult map[string]string
 	if err := json.Unmarshal([]byte(responseText), &parsedResult); err != nil {
-		log.Printf("Failed to parse Gemini JSON: %s", responseText)
-		return nil, fmt.Errorf("failed to parse JSON from Gemini: %v", err)
+		log.Printf("Failed to parse AI JSON: %s", responseText)
+		return nil, fmt.Errorf("failed to parse JSON from AI: %v", err)
 	}
 
 	result := make(map[string]string)
@@ -279,22 +284,27 @@ Channels to match:
 			continue
 		}
 
-		// 2. Fuzzy match (auto-correct missing dots)
-		corrected := ""
-		cleanMatched := strings.ToLower(strings.ReplaceAll(matchedID, ".", ""))
-		for validID := range epgChannels {
-			cleanValid := strings.ToLower(strings.ReplaceAll(validID, ".", ""))
-			if cleanMatched == cleanValid {
-				corrected = validID
+		// 2. Auto-Correction / Fuzzy Match fallback for hallucinations
+		cleanID := strings.ReplaceAll(matchedID, ".", "")
+		cleanID = strings.ReplaceAll(cleanID, "-", "")
+		cleanID = strings.ToLower(cleanID)
+
+		bestMatch := ""
+		for actualID := range epgChannels {
+			cleanActual := strings.ReplaceAll(actualID, ".", "")
+			cleanActual = strings.ReplaceAll(cleanActual, "-", "")
+			cleanActual = strings.ToLower(cleanActual)
+			if cleanID == cleanActual {
+				bestMatch = actualID
 				break
 			}
 		}
 
-		if corrected != "" {
-			log.Printf("Gemini hallucinated ID '%s', auto-corrected to '%s' for channel '%s'", matchedID, corrected, rawName)
-			result[rawName] = corrected
+		if bestMatch != "" {
+			log.Printf("Auto-corrected AI hallucination: %s -> %s", matchedID, bestMatch)
+			result[rawName] = bestMatch
 		} else {
-			log.Printf("Gemini hallucinated ID '%s' for channel '%s', dropped because it does not exist.", matchedID, rawName)
+			log.Printf("AI suggested invalid EPG ID that couldn't be auto-corrected: %s", matchedID)
 		}
 	}
 

@@ -48,6 +48,9 @@ type AppConfig struct {
 	AllowedIPs      []string            `json:"allowed_ips"`
 	AllowedDomains  []string            `json:"allowed_domains"`
 	GeminiAPIKey    string              `json:"gemini_api_key"`
+	OllamaAPIUrl    string              `json:"ollama_api_url"`
+	OllamaAPIKey    string              `json:"ollama_api_key"`
+	OllamaModel     string              `json:"ollama_model"`
 }
 
 var (

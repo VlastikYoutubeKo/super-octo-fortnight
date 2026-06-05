@@ -168,13 +168,18 @@ I have a list of raw IPTV channel names and a list of available EPG channel IDs.
 Please match the IPTV channels to the closest EPG channel ID.
 If you are not sure, leave the ID empty.
 
+CRITICAL RULES:
+1. You MUST select the "ID" EXACTLY as it appears in the provided list. 
+2. Do not invent, guess, or alter IDs. Pay strict attention to dots, dashes, and suffixes (e.g., if the list has "TVN.7.HD.pl", do not output "TVN7.HD.pl" or "TVN7.pl").
+3. If an exact matching ID is not found, return an empty string "".
+
 Available EPG Channels:
 %s
 
 Raw IPTV Channels to match:
 %s
 
-Return ONLY a valid JSON object where the key is the exact "Raw IPTV Channel" and the value is the matched "ID". Do not include markdown codeblocks or any other text.`,
+Return ONLY a valid JSON object where the key is the exact "Raw IPTV Channel" and the value is the exact matched "ID". Do not include markdown codeblocks or any other text.`,
 		strings.Join(epgList, "\n"),
 		strings.Join(unmappedChannels, "\n"))
 
@@ -225,10 +230,41 @@ Return ONLY a valid JSON object where the key is the exact "Raw IPTV Channel" an
 
 	log.Printf("Gemini AI Match Response:\n%s\n", responseText)
 
-	var result map[string]string
-	if err := json.Unmarshal([]byte(responseText), &result); err != nil {
+	var parsedResult map[string]string
+	if err := json.Unmarshal([]byte(responseText), &parsedResult); err != nil {
 		log.Printf("Failed to parse Gemini JSON: %s", responseText)
 		return nil, fmt.Errorf("failed to parse JSON from Gemini: %v", err)
+	}
+
+	result := make(map[string]string)
+	for rawName, matchedID := range parsedResult {
+		if matchedID == "" {
+			continue
+		}
+		
+		// 1. Strict match
+		if _, ok := epgChannels[matchedID]; ok {
+			result[rawName] = matchedID
+			continue
+		}
+
+		// 2. Fuzzy match (auto-correct missing dots)
+		corrected := ""
+		cleanMatched := strings.ToLower(strings.ReplaceAll(matchedID, ".", ""))
+		for validID := range epgChannels {
+			cleanValid := strings.ToLower(strings.ReplaceAll(validID, ".", ""))
+			if cleanMatched == cleanValid {
+				corrected = validID
+				break
+			}
+		}
+
+		if corrected != "" {
+			log.Printf("Gemini hallucinated ID '%s', auto-corrected to '%s' for channel '%s'", matchedID, corrected, rawName)
+			result[rawName] = corrected
+		} else {
+			log.Printf("Gemini hallucinated ID '%s' for channel '%s', dropped because it does not exist.", matchedID, rawName)
+		}
 	}
 
 	return result, nil

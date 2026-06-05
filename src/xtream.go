@@ -276,7 +276,8 @@ func xtreamAPI(provider Provider, action string, params map[string]string) inter
 
 	for i := 0; i < maxRetries; i++ {
 		client := &http.Client{Timeout: 60 * time.Second}
-		if len(proxies) > 0 {
+		// Use proxy for all attempts except the very last one, which will act as a direct fallback
+		if len(proxies) > 0 && i < maxRetries-1 {
 			proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))])
 			if err == nil {
 				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
@@ -407,7 +408,7 @@ func filterEpg(w http.ResponseWriter, provider Provider, categoryID string) {
 
 	for i := 0; i < maxRetries; i++ {
 		client := &http.Client{Timeout: 60 * time.Second}
-		if len(proxies) > 0 {
+		if len(proxies) > 0 && i < maxRetries-1 {
 			proxyUrl, parseErr := url.Parse(proxies[rand.Intn(len(proxies))])
 			if parseErr == nil {
 				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}

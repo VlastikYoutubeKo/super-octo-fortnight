@@ -156,32 +156,33 @@ func MatchWithGemini(apiKeys []string, unmappedChannels []string, epgChannels ma
 		return nil, fmt.Errorf("gemini API key is empty")
 	}
 
-	// Prepare EPG list
-	var epgList []string
-	for id, name := range epgChannels {
-		epgList = append(epgList, fmt.Sprintf("%s (ID: %s)", name, id))
+	// Instead of dumping 26,000+ channels, pre-filter locally using GetTopCandidates
+	var allIDs []string
+	for id := range epgChannels {
+		allIDs = append(allIDs, id)
 	}
 
-	// We might hit limits if we send too many, but for now let's assume it fits in context.
+	var matchTasks []string
+	for _, ch := range unmappedChannels {
+		topIDs := GetTopCandidates(ch, allIDs, 15)
+		var opts []string
+		for _, id := range topIDs {
+			opts = append(opts, fmt.Sprintf("%s (ID: %s)", epgChannels[id], id))
+		}
+		matchTasks = append(matchTasks, fmt.Sprintf("IPTV Channel: '%s'\nAvailable Options:\n%s\n", ch, strings.Join(opts, "\n")))
+	}
+
 	prompt := fmt.Sprintf(`You are a smart TV channel EPG assigner. 
-I have a list of raw IPTV channel names and a list of available EPG channel IDs. 
-Please match the IPTV channels to the closest EPG channel ID.
-If you are not sure, leave the ID empty.
+For each IPTV channel, I will provide a short list of 15 candidate EPG options. 
+Please select the best matching EPG ID from its options. If none match, leave it empty.
 
 CRITICAL RULES:
-1. You MUST select the "ID" EXACTLY as it appears in the provided list. 
-2. Do not invent, guess, or alter IDs. Pay strict attention to dots, dashes, and suffixes (e.g., if the list has "TVN.7.HD.pl", do not output "TVN7.HD.pl" or "TVN7.pl").
-3. If an exact matching ID is not found, return an empty string "".
+1. You MUST select the "ID" EXACTLY as it appears in the options for that specific channel. 
+2. Do not invent, guess, or alter IDs. 
+3. Return ONLY a valid JSON object where the key is the exact "IPTV Channel" and the value is the exact matched "ID".
 
-Available EPG Channels:
-%s
-
-Raw IPTV Channels to match:
-%s
-
-Return ONLY a valid JSON object where the key is the exact "Raw IPTV Channel" and the value is the exact matched "ID". Do not include markdown codeblocks or any other text.`,
-		strings.Join(epgList, "\n"),
-		strings.Join(unmappedChannels, "\n"))
+Channels to match:
+%s`, strings.Join(matchTasks, "\n"))
 
 	reqBody := GeminiRequest{}
 	reqBody.Contents = append(reqBody.Contents, struct {

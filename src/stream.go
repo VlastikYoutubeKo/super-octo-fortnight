@@ -115,11 +115,12 @@ func startProducer(s *Stream) {
 
 				if currentEngine == "ffmpeg" {
 					cmdName = "ffmpeg"
-					args = []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
 					if isFallback {
+						args = []string{"-hide_banner", "-loglevel", "warning"}
 						args = append(args, "-stream_loop", "-1")
 						srcUrl = filepath.Join(scriptDir, "fallback.mp4")
 					} else {
+						args = []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
 						args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
 					}
 					args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")

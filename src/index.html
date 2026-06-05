@@ -505,6 +505,7 @@ async function loadPlaylistCategories(pid) {
   try {
     const r = await get('/xtream/providers/' + pid + '/categories?type=live');
     const cats = r.categories || [];
+    cats.sort((a, b) => a.name.localeCompare(b.name));
     el.innerHTML = cats.map(c => `
       <label style="display:flex; align-items:center; gap:8px; cursor:pointer; background:rgba(0,0,0,0.2); padding:10px; border-radius:6px; margin:0;">
         <input type="checkbox" class="pl-cat-check" value="${c.id}"> ${c.name}

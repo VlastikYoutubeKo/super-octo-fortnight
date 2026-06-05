@@ -223,6 +223,8 @@ Return ONLY a valid JSON object where the key is the exact "Raw IPTV Channel" an
 	responseText = strings.TrimSuffix(responseText, "```")
 	responseText = strings.TrimSpace(responseText)
 
+	log.Printf("Gemini AI Match Response:\n%s\n", responseText)
+
 	var result map[string]string
 	if err := json.Unmarshal([]byte(responseText), &result); err != nil {
 		log.Printf("Failed to parse Gemini JSON: %s", responseText)

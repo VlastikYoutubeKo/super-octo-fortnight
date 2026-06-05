@@ -42,7 +42,6 @@ func NormalizeChannelName(name string) string {
 	return cleanName
 }
 
-// CleanChannelNameForM3U removes ugly tags like [1080p] or [EXTRA] and cleans up the string for display in the M3U playlist.
 func CleanChannelNameForM3U(name string) string {
 	if name == "" {
 		return ""
@@ -56,14 +55,23 @@ func CleanChannelNameForM3U(name string) string {
 	// Fix up leftover artifacts like "PL-: " or "PL - :"
 	clean = strings.ReplaceAll(clean, "-:", "-")
 	clean = strings.ReplaceAll(clean, ":-", "-")
-	clean = strings.ReplaceAll(clean, " : ", " ")
-	clean = strings.ReplaceAll(clean, " -  ", " - ")
+	clean = strings.ReplaceAll(clean, "::", ":")
+	clean = strings.ReplaceAll(clean, "--", "-")
+
+	// Collapse multiple spaces so the next regex works predictably
+	clean = strings.Join(strings.Fields(clean), " ")
+
+	// Standardize Country/Category prefixes
+	// Matches 2-3 letters at start, followed by combinations of spaces, dashes, or colons
+	// Example: "PL-", "PL: ", "CZ - ", "UK:" -> "PL - ", "CZ - ", "UK - "
+	rePrefix := regexp.MustCompile(`^([A-Za-z]{2,3})\s*[:-]\s*`)
+	clean = rePrefix.ReplaceAllString(clean, "$1 - ")
 
 	// Trim redundant spaces and colons/hyphens at the start/end
 	clean = strings.TrimSpace(clean)
 	clean = strings.Trim(clean, ":- ")
 	
-	// Collapse multiple spaces
+	// Collapse multiple spaces again
 	clean = strings.Join(strings.Fields(clean), " ")
 	
 	if clean == "" {

@@ -69,7 +69,7 @@ Channels to match:
 	}
 
 	log.Printf("Calling Ollama API at %s with model %s...", apiUrl, model)
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

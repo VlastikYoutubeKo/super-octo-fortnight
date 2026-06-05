@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
 func setupM3URoutes(mux *http.ServeMux) {
@@ -15,6 +18,16 @@ func setupM3URoutes(mux *http.ServeMux) {
 		if providerID == "" || categories == "" {
 			http.Error(w, "provider and categories are required", 400)
 			return
+		}
+
+		// Check Cache
+		hashKey := md5.Sum([]byte(r.URL.RawQuery))
+		cacheFile := fmt.Sprintf("m3u_cache_%x.m3u", hashKey)
+		if info, err := os.Stat(cacheFile); err == nil && r.URL.Query().Get("force") != "1" {
+			if time.Since(info.ModTime()) < 12*time.Hour {
+				http.ServeFile(w, r, cacheFile)
+				return
+			}
 		}
 
 		configLock.RLock()
@@ -161,6 +174,8 @@ func setupM3URoutes(mux *http.ServeMux) {
 		}
 
 		m3uContent := strings.Join(m3uLines, "\n")
+		os.WriteFile(cacheFile, []byte(m3uContent), 0644)
+
 		w.Header().Set("Content-Type", "audio/mpegurl")
 		w.Header().Set("Content-Disposition", `attachment; filename="bulk_playlist.m3u"`)
 		w.Write([]byte(m3uContent))

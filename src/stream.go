@@ -129,7 +129,11 @@ func startProducer(s *Stream) {
 					args = append(args, "-i", srcUrl)
 					args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-map", "0:s?")
 					args = append(args, "-c", "copy")
-					args = append(args, "-bsf:v", "dump_extra=freq=all")
+					if isFallback {
+						args = append(args, "-bsf:v", "h264_mp4toannexb")
+					} else {
+						args = append(args, "-bsf:v", "dump_extra=freq=all")
+					}
 					args = append(args, "-max_interleave_delta", "0", "-max_muxing_queue_size", "1024")
 					// Force muxer to perfectly align PCR and DTS
 					args = append(args, "-muxdelay", "0", "-muxpreload", "0", "-avoid_negative_ts", "make_zero")

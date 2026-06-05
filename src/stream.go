@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -99,17 +100,25 @@ func startProducer(s *Stream) {
 			var stdoutReader io.Reader
 			var cmd *exec.Cmd
 
-			if engine != "http" {
-				log.Printf("Starting %s engine for %s", engine, s.Key)
+			// The fallback video is an MP4 file. It MUST be remuxed to MPEG-TS.
+			// The pure HTTP engine cannot do this, so we force ffmpeg.
+			currentEngine := engine
+			if srcUrl == FallbackURL {
+				currentEngine = "ffmpeg"
+			}
+
+			if currentEngine != "http" {
+				log.Printf("Starting %s engine for %s", currentEngine, s.Key)
 				isFallback := (srcUrl == FallbackURL)
 				var args []string
 				var cmdName string
 
-				if engine == "ffmpeg" {
+				if currentEngine == "ffmpeg" {
 					cmdName = "ffmpeg"
 					args = []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
 					if isFallback {
 						args = append(args, "-stream_loop", "-1")
+						srcUrl = filepath.Join(scriptDir, "fallback.mp4")
 					} else {
 						args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
 					}
@@ -125,7 +134,7 @@ func startProducer(s *Stream) {
 					args = append(args, "-muxdelay", "0", "-muxpreload", "0", "-avoid_negative_ts", "make_zero")
 					args = append(args, "-f", "mpegts", "-mpegts_flags", "initial_discontinuity+resend_headers", "-flush_packets", "1", "pipe:1")
 
-				} else if engine == "tsduck" {
+				} else if currentEngine == "tsduck" {
 					cmdName = "tsp"
 					args = []string{"-I", "http", "--user-agent", ua, "--receive-timeout", "20000"}
 					if isFallback {

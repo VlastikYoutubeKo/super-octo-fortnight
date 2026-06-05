@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -100,6 +101,9 @@ func main() {
 	detectXtream()
 	loadEpgMapping()
 	
+	// Download fallback video locally so ffmpeg starts instantly
+	go downloadFallbackVideo()
+	
 	// Start background channel name refresher
 	go refreshChannelNamesLoop()
 
@@ -160,10 +164,39 @@ func loadConfig() {
 
 	configLock.Lock()
 	if err := json.Unmarshal(file, &Config); err != nil {
-		log.Fatalf("Failed to parse config: %v", err)
+		log.Printf("Failed to decode config.json: %v", err)
 	}
+
 	configLock.Unlock()
 	log.Printf("Loaded config successfully. AutoFallback: %v, Sources: %d", Config.AutoFallback, len(Config.Sources))
+}
+
+func downloadFallbackVideo() {
+	localPath := filepath.Join(scriptDir, "fallback.mp4")
+	if _, err := os.Stat(localPath); err == nil {
+		return // already downloaded
+	}
+
+	log.Printf("Downloading fallback video to %s...", localPath)
+	resp, err := http.Get(FallbackURL)
+	if err != nil {
+		log.Printf("Warning: failed to download fallback video: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(localPath)
+	if err != nil {
+		log.Printf("Warning: failed to create fallback video file: %v", err)
+		return
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		log.Printf("Warning: failed to write fallback video: %v", err)
+	} else {
+		log.Printf("Fallback video successfully downloaded.")
+	}
 }
 
 func saveConfig() {

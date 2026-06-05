@@ -80,19 +80,32 @@ func setupM3URoutes(mux *http.ServeMux) {
 						apiKeys[i] = strings.TrimSpace(apiKeys[i])
 					}
 					matched, err := MatchWithGemini(apiKeys, unmapped, epgChannels)
-					if err == nil {
-						epgMappingLock.Lock()
-						for k, v := range matched {
-							if v != "" {
-								EPGMapping[k] = v
+					if err != nil {
+						fmt.Printf("Auto-EPG Gemini match failed: %v\nFalling back to purely offline fuzzy matching...\n", err)
+						matched = make(map[string]string)
+						var allIDs []string
+						for id := range epgChannels {
+							allIDs = append(allIDs, id)
+						}
+						for _, ch := range unmapped {
+							top := GetTopCandidates(ch, allIDs, 1)
+							if len(top) > 0 {
+								// Basic safety check: don't randomly assign if name is too short
+								if len(ch) > 2 {
+									matched[ch] = top[0]
+								}
 							}
 						}
-						epgMappingLock.Unlock()
-						saveEpgMapping()
-					} else {
-						// log error but continue generating M3U
-						fmt.Printf("Auto-EPG Gemini match failed: %v\n", err)
 					}
+
+					epgMappingLock.Lock()
+					for k, v := range matched {
+						if v != "" {
+							EPGMapping[k] = v
+						}
+					}
+					epgMappingLock.Unlock()
+					saveEpgMapping()
 				} else {
 					fmt.Printf("Auto-EPG Fetch EPG failed: %v\n", err)
 				}
@@ -177,8 +190,18 @@ func setupM3URoutes(mux *http.ServeMux) {
 
 		matched, err := MatchWithGemini(apiKeys, req.Channels, epgChannels)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"AI Matching failed: %v"}`, err), 500)
-			return
+			fmt.Printf("Manual AI Match failed: %v. Using purely offline fallback.\n", err)
+			matched = make(map[string]string)
+			var allIDs []string
+			for id := range epgChannels {
+				allIDs = append(allIDs, id)
+			}
+			for _, ch := range req.Channels {
+				top := GetTopCandidates(ch, allIDs, 1)
+				if len(top) > 0 && len(ch) > 2 {
+					matched[ch] = top[0]
+				}
+			}
 		}
 
 		epgMappingLock.Lock()

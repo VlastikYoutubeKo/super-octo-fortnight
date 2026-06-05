@@ -151,8 +151,8 @@ type GeminiResponse struct {
 }
 
 // MatchWithGemini asks the Gemini API to match unmapped channels with available EPG IDs.
-func MatchWithGemini(apiKey string, unmappedChannels []string, epgChannels map[string]string) (map[string]string, error) {
-	if apiKey == "" {
+func MatchWithGemini(apiKeys []string, unmappedChannels []string, epgChannels map[string]string) (map[string]string, error) {
+	if len(apiKeys) == 0 || (len(apiKeys) == 1 && apiKeys[0] == "") {
 		return nil, fmt.Errorf("gemini API key is empty")
 	}
 
@@ -201,28 +201,51 @@ Return ONLY a valid JSON object where the key is the exact "Raw IPTV Channel" an
 		return nil, err
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=%s", apiKey)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	var responseText string
+	var lastErr error
 
-	if resp.StatusCode != 200 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("gemini API error: %s", string(bodyBytes))
+	for _, apiKey := range apiKeys {
+		if apiKey == "" {
+			continue
+		}
+		
+		url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=%s", apiKey)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			lastErr = err
+			log.Printf("Gemini API request failed for key %s...: %v", apiKey[:5], err)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+			log.Printf("Gemini API error for key %s...: %v", apiKey[:5], lastErr)
+			continue
+		}
+
+		var geminiResp GeminiResponse
+		if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+			resp.Body.Close()
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+
+		if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+			lastErr = fmt.Errorf("empty response from Gemini")
+			continue
+		}
+
+		responseText = geminiResp.Candidates[0].Content.Parts[0].Text
+		break // Success!
 	}
 
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return nil, err
+	if responseText == "" {
+		return nil, fmt.Errorf("all Gemini API keys failed. Last error: %v", lastErr)
 	}
 
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("empty response from Gemini")
-	}
-
-	responseText := geminiResp.Candidates[0].Content.Parts[0].Text
 	responseText = strings.TrimPrefix(responseText, "```json")
 	responseText = strings.TrimPrefix(responseText, "```")
 	responseText = strings.TrimSuffix(responseText, "```")

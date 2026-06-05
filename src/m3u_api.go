@@ -72,7 +72,11 @@ func setupM3URoutes(mux *http.ServeMux) {
 				if err == nil {
 					// We might have many unmapped, Gemini might have limits. 
 					// For safety, we match all of them, but in production we'd chunk them.
-					matched, err := MatchWithGemini(apiKey, unmapped, epgChannels)
+					apiKeys := strings.Split(apiKey, ",")
+					for i := range apiKeys {
+						apiKeys[i] = strings.TrimSpace(apiKeys[i])
+					}
+					matched, err := MatchWithGemini(apiKeys, unmapped, epgChannels)
 					if err == nil {
 						epgMappingLock.Lock()
 						for k, v := range matched {
@@ -158,7 +162,12 @@ func setupM3URoutes(mux *http.ServeMux) {
 			return
 		}
 
-		matched, err := MatchWithGemini(apiKey, req.Channels, epgChannels)
+		apiKeys := strings.Split(apiKey, ",")
+		for i := range apiKeys {
+			apiKeys[i] = strings.TrimSpace(apiKeys[i])
+		}
+
+		matched, err := MatchWithGemini(apiKeys, req.Channels, epgChannels)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"AI Matching failed: %v"}`, err), 500)
 			return

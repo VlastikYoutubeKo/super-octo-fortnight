@@ -210,11 +210,18 @@ Channels to match:
 			continue
 		}
 		
+		var keyPreview string
+		if len(apiKey) > 8 {
+			keyPreview = "..." + apiKey[len(apiKey)-4:]
+		} else {
+			keyPreview = apiKey
+		}
+		
 		url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=%s", apiKey)
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
 			lastErr = err
-			log.Printf("Gemini API request failed for key %s...: %v", apiKey[:5], err)
+			log.Printf("Gemini API request failed for key %s: %v", keyPreview, err)
 			continue
 		}
 
@@ -222,7 +229,7 @@ Channels to match:
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(bodyBytes))
-			log.Printf("Gemini API error for key %s...: %v", apiKey[:5], lastErr)
+			log.Printf("Gemini API error for key %s: %v", keyPreview, lastErr)
 			continue
 		}
 

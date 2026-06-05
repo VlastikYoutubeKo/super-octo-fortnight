@@ -33,22 +33,6 @@ go build -o ../proxy_server *.go
 
 ---
 
-## 📜 Recent Changelog
+## 📜 Changelog
 
-### v1.5.0 - The Smart EPG Update
-- **Feature:** Introduced AI M3U Bulk Playlist generation in the UI.
-- **Feature:** Gemini 3.5-flash AI integration for automatic XMLTV EPG ID matching.
-- **Feature:** Added scraping support for bulk EPG text files and directories from epgshare01.
-- **Feature:** Multi-API key rotation/fallback added to bypass Gemini free-tier rate limits.
-- **Feature:** Added an M3U Name Sanitizer that cleans ugly prefixes and tags from generated playlists.
-- **Enhancement:** UI categories are now sorted alphabetically for clean provider groupings.
-- **Enhancement:** Added auto-correction and fuzzy-matching logic to prevent Gemini AI from hallucinating fake EPG IDs (e.g. auto-correcting `TVN7.pl` to `TVN.7.pl`).
-- **Fix:** Redesigned the Xtream API fetcher to disable Webshare proxies for lightweight metadata calls, dropping 16-second timeouts down to instant direct connections.
-- **Fix:** Optimized the channel refresh background loop to group by `SourceID`, avoiding redundant fetching.
-- **Chore:** Root `index.html` updated with a unified dark mode design.
-
-### v1.4.x - The Core Proxy Polish
-- **Fix:** Completely aligned PCR and DTS in FFmpeg engine to fix TVHeadend packet drops.
-- **Fix:** Removed HTTP chunked transfer boundaries, sending raw MPEG-TS over raw TCP via `http.Hijacker`.
-- **Feature:** Added rapid failover functionality to blast through dead streams within 1s.
-- **Feature:** Added internal fallback video when all providers are offline.
+All notable changes, updates, and bug fixes are documented in the [CHANGELOG.md](CHANGELOG.md) file, following the *Keep a Changelog* standard.

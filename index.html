@@ -79,29 +79,13 @@
         <li class="feature-item"><strong>Hijacked TCP Pipes:</strong> Transmits raw MPEG-TS data directly onto sockets to prevent HTTP corruption.</li>
     </ul>
 
-    <h2>Recent Changelog</h2>
+    <h2>📜 Development & Updates</h2>
+    <p>We actively maintain and improve the proxy engine. For a detailed list of all bug fixes, performance optimizations, and new features, please refer to our official changelog.</p>
     
-    <h3>v1.5.0 - The Smart EPG Update</h3>
-    <ul>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Introduced AI M3U Bulk Playlist generation in the UI.</div></li>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Gemini 3.5-flash AI integration for automatic XMLTV EPG ID matching.</div></li>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added scraping support for bulk EPG text files and directories from epgshare01.</div></li>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Multi-API key rotation/fallback added to bypass Gemini free-tier rate limits.</div></li>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added an M3U Name Sanitizer that cleans ugly prefixes and tags from generated playlists.</div></li>
-        <li class="changelog-item fix"><div><span class="tag fix">Enhancement</span> UI categories are now sorted alphabetically for clean provider groupings.</div></li>
-        <li class="changelog-item fix"><div><span class="tag fix">Enhancement</span> Added auto-correction and fuzzy-matching logic to prevent Gemini AI from hallucinating fake EPG IDs.</div></li>
-        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Redesigned Xtream API fetcher to disable Webshare proxies for metadata calls, dropping timeouts down to instant direct connections.</div></li>
-        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Optimized the channel refresh background loop to group by <code>SourceID</code>, avoiding redundant fetching.</div></li>
-        <li class="changelog-item chore"><div><span class="tag chore">Chore</span> Root <code>index.html</code> updated with a unified dark mode design.</div></li>
-    </ul>
-
-    <h3>v1.4.x - The Core Proxy Polish</h3>
-    <ul>
-        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Completely aligned PCR and DTS in FFmpeg engine to fix TVHeadend packet drops.</div></li>
-        <li class="changelog-item fix"><div><span class="tag fix">Fix</span> Removed HTTP chunked transfer boundaries, sending raw MPEG-TS over raw TCP via <code>http.Hijacker</code>.</div></li>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added rapid failover functionality to blast through dead streams within 1s.</div></li>
-        <li class="changelog-item feat"><div><span class="tag feat">Feature</span> Added internal fallback video when all providers are offline.</div></li>
-    </ul>
+    <a href="CHANGELOG.md" style="display: inline-flex; align-items: center; justify-content: center; background: var(--accent); color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; text-decoration: none; margin-top: 10px; transition: background 0.2s; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+        <svg style="width: 18px; height: 18px; margin-right: 8px; fill: currentColor;" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+        View Full Changelog (Zápis změn)
+    </a>
 
     <h2>Quick Start</h2>
     <pre><code># Build the server

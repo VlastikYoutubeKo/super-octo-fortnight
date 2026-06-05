@@ -35,65 +35,81 @@ func refreshChannelNamesLoop() {
 	for {
 		// Try to refresh from any available provider
 		configLock.RLock()
-		providers := make([]Provider, 0)
+		providersBySource := make(map[string][]Provider)
 		for _, p := range Config.XtreamProviders {
-			providers = append(providers, p)
+			providersBySource[p.SourceID] = append(providersBySource[p.SourceID], p)
 		}
 		configLock.RUnlock()
 
-		if len(providers) == 0 {
+		if len(providersBySource) == 0 {
 			time.Sleep(1 * time.Minute)
 			continue
 		}
 
 		anySuccess := false
-		newValidIDs := make(map[string]bool)
 
-		for _, p := range providers {
-			log.Printf("Refreshing channel names from provider: %s", p.Name)
-			names, err := fetchLiveStreams(p)
-			if err == nil && len(names) > 0 {
-				channelNamesLock.Lock()
-				currentIDsLock.Lock()
-				
-				for id, name := range names {
-					key := fmt.Sprintf("%s:%s", p.SourceID, id)
-					ChannelNames[key] = name
-					newValidIDs[key] = true
+		for sourceID, providers := range providersBySource {
+			successForSource := false
+			newValidIDsForSource := make(map[string]bool)
+
+			for _, p := range providers {
+				log.Printf("Refreshing channel names from provider: %s (Source: %s)", p.Name, sourceID)
+				names, err := fetchLiveStreams(p)
+				if err == nil && len(names) > 0 {
+					channelNamesLock.Lock()
+					currentIDsLock.Lock()
 					
-					norm := NormalizeChannelName(name)
-					if norm != "" {
-						mappingKey := fmt.Sprintf("%s:%s", p.SourceID, norm)
+					for id, name := range names {
+						key := fmt.Sprintf("%s:%s", p.SourceID, id)
+						ChannelNames[key] = name
+						newValidIDsForSource[key] = true
 						
-						exists := false
-						for _, existing := range CurrentIDs[mappingKey] {
-							if existing == id {
-								exists = true
-								break
+						norm := NormalizeChannelName(name)
+						if norm != "" {
+							mappingKey := fmt.Sprintf("%s:%s", p.SourceID, norm)
+							
+							exists := false
+							for _, existing := range CurrentIDs[mappingKey] {
+								if existing == id {
+									exists = true
+									break
+								}
+							}
+							if !exists {
+								CurrentIDs[mappingKey] = append(CurrentIDs[mappingKey], id)
 							}
 						}
-						if !exists {
-							CurrentIDs[mappingKey] = append(CurrentIDs[mappingKey], id)
-						}
+					}
+					
+					currentIDsLock.Unlock()
+					channelNamesLock.Unlock()
+					log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
+					successForSource = true
+					anySuccess = true
+					break // Successfully fetched for this source, stop trying alternate providers
+				} else if err != nil {
+					log.Printf("Failed to refresh names from %s: %v", p.Name, err)
+				}
+				time.Sleep(2 * time.Second)
+			}
+
+			if successForSource {
+				validIDsLock.Lock()
+				// Clear old IDs for this source
+				for k := range ValidIDs {
+					if strings.HasPrefix(k, sourceID+":") {
+						delete(ValidIDs, k)
 					}
 				}
-				
-				currentIDsLock.Unlock()
-				channelNamesLock.Unlock()
-				log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
-				anySuccess = true
-			} else if err != nil {
-				log.Printf("Failed to refresh names from %s: %v", p.Name, err)
+				// Add new valid IDs
+				for k, v := range newValidIDsForSource {
+					ValidIDs[k] = v
+				}
+				validIDsLock.Unlock()
 			}
-			time.Sleep(2 * time.Second)
 		}
 
 		if anySuccess {
-			validIDsLock.Lock()
-			// Only update if we successfully fetched, so we don't wipe out valid IDs on network error
-			ValidIDs = newValidIDs
-			validIDsLock.Unlock()
-			
 			saveNamesCache() // Save immediately
 			time.Sleep(1 * time.Hour) // Refresh every hour
 		} else {
@@ -278,6 +294,7 @@ func xtreamAPI(provider Provider, action string, params map[string]string) inter
 		client := &http.Client{Timeout: 60 * time.Second}
 		// Use proxy for all attempts except the very last one, which will act as a direct fallback
 		if len(proxies) > 0 && i < maxRetries-1 {
+			client.Timeout = 8 * time.Second
 			proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))])
 			if err == nil {
 				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}
@@ -409,6 +426,7 @@ func filterEpg(w http.ResponseWriter, provider Provider, categoryID string) {
 	for i := 0; i < maxRetries; i++ {
 		client := &http.Client{Timeout: 60 * time.Second}
 		if len(proxies) > 0 && i < maxRetries-1 {
+			client.Timeout = 8 * time.Second
 			proxyUrl, parseErr := url.Parse(proxies[rand.Intn(len(proxies))])
 			if parseErr == nil {
 				client.Transport = &http.Transport{Proxy: http.ProxyURL(proxyUrl)}

@@ -42,7 +42,7 @@ func NormalizeChannelName(name string) string {
 	return cleanName
 }
 
-func CleanChannelNameForM3U(name string) string {
+func CleanChannelNameForM3U(name string, stripPrefix bool) string {
 	if name == "" {
 		return ""
 	}
@@ -61,11 +61,15 @@ func CleanChannelNameForM3U(name string) string {
 	// Collapse multiple spaces so the next regex works predictably
 	clean = strings.Join(strings.Fields(clean), " ")
 
-	// Standardize Country/Category prefixes
+	// Standardize or Strip Country/Category prefixes
 	// Matches 2-3 letters at start, followed by combinations of spaces, dashes, or colons
-	// Example: "PL-", "PL: ", "CZ - ", "UK:" -> "PL - ", "CZ - ", "UK - "
+	// Example: "PL-", "PL: ", "CZ - ", "UK:"
 	rePrefix := regexp.MustCompile(`^([A-Za-z]{2,3})\s*[:-]\s*`)
-	clean = rePrefix.ReplaceAllString(clean, "$1 - ")
+	if stripPrefix {
+		clean = rePrefix.ReplaceAllString(clean, "")
+	} else {
+		clean = rePrefix.ReplaceAllString(clean, "$1 - ")
+	}
 
 	// Trim redundant spaces and colons/hyphens at the start/end
 	clean = strings.TrimSpace(clean)

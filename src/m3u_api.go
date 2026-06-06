@@ -44,6 +44,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 		}
 
 		epgUrl := r.URL.Query().Get("epg_url")
+		stripCountry := r.URL.Query().Get("strip_country") == "1"
 
 		var allStreams []map[string]interface{}
 		catIDs := strings.Split(categories, ",")
@@ -173,7 +174,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 			}
 			epgMappingLock.RUnlock()
 
-			displayName := CleanChannelNameForM3U(streamName)
+			displayName := CleanChannelNameForM3U(streamName, stripCountry)
 			extinf := fmt.Sprintf(`#EXTINF:-1 tvg-id="%s" tvg-name="%s",%s`, epgID, displayName, displayName)
 			m3uLines = append(m3uLines, extinf)
 

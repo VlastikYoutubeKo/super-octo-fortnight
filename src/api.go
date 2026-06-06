@@ -406,7 +406,8 @@ func setupAPIRoutes(mux *http.ServeMux) {
 				epgID := fmt.Sprintf("%v", m["epg_channel_id"])
                 if epgID == "<nil>" { epgID = "" }
 
-				displayName := CleanChannelNameForM3U(streamName)
+				stripCountry := r.URL.Query().Get("strip_country") == "1"
+				displayName := CleanChannelNameForM3U(streamName, stripCountry)
 				extinf := fmt.Sprintf(`#EXTINF:-1 tvg-id="%s" tvg-name="%s",%s`, epgID, displayName, displayName)
 				m3uLines = append(m3uLines, extinf)
 

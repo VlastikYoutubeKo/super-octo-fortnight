@@ -317,7 +317,7 @@ func startProducer(s *Stream) {
 				if !active { break }
 			}
 
-			if engine != "http" && cmd != nil {
+			if cmd != nil {
 				cancel()
 				cmd.Wait()
 			} else {

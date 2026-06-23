@@ -16,6 +16,7 @@ var (
 	lastDNSCheck     time.Time
 	dnsMutex         sync.Mutex
 	httpClient       = &http.Client{Timeout: 10 * time.Second}
+	recentStreamCreations []time.Time
 )
 
 func checkUrlHealth(targetUrl string) bool {
@@ -152,8 +153,23 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		internalM3u8 := Config.InternalM3u8
 		configLock.RUnlock()
 
+		now := time.Now()
+		var recent []time.Time
+		for _, t := range recentStreamCreations {
+			if now.Sub(t) < 10*time.Second {
+				recent = append(recent, t)
+			}
+		}
+		recentStreamCreations = append(recent, now)
+		
+		// If more than 3 new streams were requested in the last 10 seconds, it's a TVH idle scan burst
+		isBurstScan := len(recentStreamCreations) >= 4
+
 		var urls []string
-		if fallbackMode {
+		if fallbackMode || isBurstScan {
+			if isBurstScan && !fallbackMode {
+				log.Printf("Burst scan detected (%d requests in 10s). Forcing fallback for %s to protect upstream.", len(recentStreamCreations), key)
+			}
 			urls = []string{FallbackURL}
 		} else {
 			// 1. Add local sources for ALL target IDs

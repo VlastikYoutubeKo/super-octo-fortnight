@@ -87,7 +87,38 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	var targetIDs []string
 	targetIDs = append(targetIDs, cleanID)
 
+	channelNamesLock.RLock()
+	originalName := ChannelNames[key]
+	channelNamesLock.RUnlock()
+	
+	if originalName != "" {
+		norm := NormalizeChannelName(originalName)
+		
+		currentIDsLock.RLock()
+		altIDs := CurrentIDs[fmt.Sprintf("%s:%s", sourceID, norm)]
+		for _, altID := range altIDs {
+			if altID != cleanID {
+				targetIDs = append(targetIDs, altID)
+			}
+		}
+		currentIDsLock.RUnlock()
 
+		if len(targetIDs) > 1 {
+			// Sort numerically descending to try the NEWEST stream ID first, 
+			// BUT ALWAYS keep the explicitly requested cleanID at index 0!
+			for i := 1; i < len(targetIDs)-1; i++ {
+				for j := i + 1; j < len(targetIDs); j++ {
+					var id1, id2 int
+					fmt.Sscanf(targetIDs[i], "%d", &id1)
+					fmt.Sscanf(targetIDs[j], "%d", &id2)
+					if id2 > id1 {
+						targetIDs[i], targetIDs[j] = targetIDs[j], targetIDs[i]
+					}
+				}
+			}
+			log.Printf("ID Discovery: Stream %s ('%s') has %d possible IDs. Trying requested %s first, then newest alternates: %v", key, originalName, len(targetIDs), cleanID, targetIDs)
+		}
+	}
 
 	log.Printf("Proxy Request from %s | Key: %s | Path: %s", clientIP, key, r.URL.Path)
 

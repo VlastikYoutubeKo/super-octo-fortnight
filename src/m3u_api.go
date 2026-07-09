@@ -15,8 +15,10 @@ func setupM3URoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/playlist/bulk.m3u", func(w http.ResponseWriter, r *http.Request) {
 		providerID := r.URL.Query().Get("provider")
 		categories := r.URL.Query().Get("categories") // comma separated
-		if providerID == "" || categories == "" {
-			http.Error(w, "provider and categories are required", 400)
+		categoryNames := r.URL.Query().Get("category_names") // comma separated
+		
+		if providerID == "" || (categories == "" && categoryNames == "") {
+			http.Error(w, "provider and either categories or category_names are required", 400)
 			return
 		}
 
@@ -47,7 +49,26 @@ func setupM3URoutes(mux *http.ServeMux) {
 		stripCountry := r.URL.Query().Get("strip_country") == "1"
 
 		var allStreams []map[string]interface{}
-		catIDs := strings.Split(categories, ",")
+		var catIDs []string
+		
+		if categoryNames != "" {
+			nameFilter := strings.Split(categoryNames, ",")
+			nameMap := make(map[string]bool)
+			for _, n := range nameFilter {
+				nameMap[strings.TrimSpace(strings.ToLower(n))] = true
+			}
+			allCats := getCategories(provider, "live")
+			for _, c := range allCats {
+				name := strings.TrimSpace(strings.ToLower(fmt.Sprintf("%v", c["name"])))
+				if nameMap[name] {
+					catIDs = append(catIDs, fmt.Sprintf("%v", c["id"]))
+				}
+			}
+			fmt.Printf("Resolved category names to IDs: %v\n", catIDs)
+		} else {
+			catIDs = strings.Split(categories, ",")
+		}
+		
 		seenNames := make(map[string]bool)
 		
 		for _, catID := range catIDs {

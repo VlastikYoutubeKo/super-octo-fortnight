@@ -129,60 +129,63 @@ func setupM3URoutes(mux *http.ServeMux) {
 		epgMappingLock.RUnlock()
 
 		// Run Auto-EPG if requested
+		// Run Auto-EPG if requested in a background goroutine so it doesn't block the M3U return
 		if epgUrl != "" && len(unmapped) > 0 {
-			configLock.RLock()
-			apiKey := Config.GeminiAPIKey
-			ollamaUrl := Config.OllamaAPIUrl
-			ollamaKey := Config.OllamaAPIKey
-			ollamaModel := Config.OllamaModel
-			configLock.RUnlock()
+			go func(unmappedChannels []string, url string) {
+				configLock.RLock()
+				apiKey := Config.GeminiAPIKey
+				ollamaUrl := Config.OllamaAPIUrl
+				ollamaKey := Config.OllamaAPIKey
+				ollamaModel := Config.OllamaModel
+				configLock.RUnlock()
 
-			if ollamaUrl != "" || apiKey != "" {
-				epgChannels, err := FetchEPGChannelIDs(epgUrl)
-				if err == nil {
-					var matched map[string]string
-					var matchErr error
+				if ollamaUrl != "" || apiKey != "" {
+					epgChannels, err := FetchEPGChannelIDs(url)
+					if err == nil {
+						var matched map[string]string
+						var matchErr error
 
-					if ollamaUrl != "" {
-						matched, matchErr = MatchWithOllama(ollamaUrl, ollamaKey, ollamaModel, unmapped, epgChannels)
-					} else {
-						apiKeys := strings.Split(apiKey, ",")
-						for i := range apiKeys {
-							apiKeys[i] = strings.TrimSpace(apiKeys[i])
+						if ollamaUrl != "" {
+							matched, matchErr = MatchWithOllama(ollamaUrl, ollamaKey, ollamaModel, unmappedChannels, epgChannels)
+						} else {
+							apiKeys := strings.Split(apiKey, ",")
+							for i := range apiKeys {
+								apiKeys[i] = strings.TrimSpace(apiKeys[i])
+							}
+							matched, matchErr = MatchWithGemini(apiKeys, unmappedChannels, epgChannels)
 						}
-						matched, matchErr = MatchWithGemini(apiKeys, unmapped, epgChannels)
-					}
 
-					if matchErr != nil {
-						fmt.Printf("Auto-EPG AI match failed: %v\nFalling back to purely offline fuzzy matching...\n", matchErr)
-						matched = make(map[string]string)
-						var allIDs []string
-						for id := range epgChannels {
-							allIDs = append(allIDs, id)
-						}
-						for _, ch := range unmapped {
-							top := GetTopCandidates(ch, allIDs, 1, 10)
-							if len(top) > 0 {
-								// Basic safety check: don't randomly assign if name is too short
-								if len(ch) > 2 {
-									matched[ch] = top[0]
+						if matchErr != nil {
+							fmt.Printf("Auto-EPG AI match failed: %v\nFalling back to purely offline fuzzy matching...\n", matchErr)
+							matched = make(map[string]string)
+							var allIDs []string
+							for id := range epgChannels {
+								allIDs = append(allIDs, id)
+							}
+							for _, ch := range unmappedChannels {
+								top := GetTopCandidates(ch, allIDs, 1, 10)
+								if len(top) > 0 {
+									// Basic safety check: don't randomly assign if name is too short
+									if len(ch) > 2 {
+										matched[ch] = top[0]
+									}
 								}
 							}
 						}
-					}
 
-					epgMappingLock.Lock()
-					for k, v := range matched {
-						if v != "" {
-							EPGMapping[k] = v
+						epgMappingLock.Lock()
+						for k, v := range matched {
+							if v != "" {
+								EPGMapping[k] = v
+							}
 						}
+						epgMappingLock.Unlock()
+						saveEpgMapping()
+					} else {
+						fmt.Printf("Auto-EPG Fetch EPG failed: %v\n", err)
 					}
-					epgMappingLock.Unlock()
-					saveEpgMapping()
-				} else {
-					fmt.Printf("Auto-EPG Fetch EPG failed: %v\n", err)
 				}
-			}
+			}(unmapped, epgUrl)
 		}
 
 		// Generate output

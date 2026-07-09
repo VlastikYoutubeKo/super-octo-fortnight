@@ -181,6 +181,7 @@ CRITICAL RULES:
 2. Do not invent, guess, or alter IDs. 
 3. Return ONLY a valid JSON object where the key is the exact "IPTV Channel" and the value is the exact matched "ID".
 4. If a specific regional channel is requested (e.g., 'ITV CENTRAL WEST' or 'BBC One North West') and its exact EPG ID is not in the options, you MUST match it to its national version if available (e.g., 'ITV 1', 'BBC One', 'ITV.uk', 'ITV1.uk', etc.).
+5. If NO option is a logical match (e.g., completely different channel like '5Action' vs 'TNT Sports 5 HD'), YOU MUST LEAVE IT EMPTY. DO NOT GUESS!
 
 Channels to match:
 %s`, strings.Join(matchTasks, "\n"))

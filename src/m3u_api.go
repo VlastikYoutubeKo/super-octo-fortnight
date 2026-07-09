@@ -119,7 +119,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 							allIDs = append(allIDs, id)
 						}
 						for _, ch := range unmapped {
-							top := GetTopCandidates(ch, allIDs, 1)
+							top := GetTopCandidates(ch, allIDs, 1, 10)
 							if len(top) > 0 {
 								// Basic safety check: don't randomly assign if name is too short
 								if len(ch) > 2 {
@@ -240,7 +240,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 				allIDs = append(allIDs, id)
 			}
 			for _, ch := range req.Channels {
-				top := GetTopCandidates(ch, allIDs, 1)
+				top := GetTopCandidates(ch, allIDs, 1, 10)
 				if len(top) > 0 && len(ch) > 2 {
 					matched[ch] = top[0]
 				}

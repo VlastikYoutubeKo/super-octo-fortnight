@@ -24,7 +24,7 @@ func MatchWithOllama(apiUrl, apiKey, model string, unmappedChannels []string, ep
 
 	var matchTasks []string
 	for _, ch := range unmappedChannels {
-		topIDs := GetTopCandidates(ch, allIDs, 15)
+		topIDs := GetTopCandidates(ch, allIDs, 15, 3)
 		var opts []string
 		for _, id := range topIDs {
 			opts = append(opts, fmt.Sprintf("%s (ID: %s)", epgChannels[id], id))
@@ -40,6 +40,7 @@ CRITICAL RULES:
 1. You MUST select the "ID" EXACTLY as it appears in the options for that specific channel. 
 2. Do not invent, guess, or alter IDs. 
 3. Return ONLY a valid JSON object where the key is the exact "IPTV Channel" and the value is the exact matched "ID".
+4. If a specific regional channel is requested (e.g., 'ITV CENTRAL WEST' or 'BBC One North West') and its exact EPG ID is not in the options, you MUST match it to its national version if available (e.g., 'ITV 1', 'BBC One', 'ITV.uk', 'ITV1.uk', etc.).
 
 Channels to match:
 %s`, strings.Join(matchTasks, "\n"))

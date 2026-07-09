@@ -6,7 +6,7 @@ import (
 )
 
 // GetTopCandidates finds the top N closest EPG IDs for a given channel name based on word intersection
-func GetTopCandidates(channelName string, epgIDs []string, topN int) []string {
+func GetTopCandidates(channelName string, epgIDs []string, topN int, minScore int) []string {
 	// tokenize channel name
 	cleanName := strings.ToLower(channelName)
 	cleanName = strings.ReplaceAll(cleanName, "-", " ")
@@ -48,8 +48,8 @@ func GetTopCandidates(channelName string, epgIDs []string, topN int) []string {
 			}
 		}
 		
-		// If no matches at all, skip
-		if matches > 0 {
+		// Require at least minScore match score
+		if matches >= minScore {
 			lenDiff := len(idLower) - len(cleanName)
 			if lenDiff < 0 {
 				lenDiff = -lenDiff
@@ -69,13 +69,6 @@ func GetTopCandidates(channelName string, epgIDs []string, topN int) []string {
 	var result []string
 	for i := 0; i < len(scores) && i < topN; i++ {
 		result = append(result, scores[i].id)
-	}
-
-	// Fallback if no matches found
-	if len(result) == 0 {
-		for i := 0; i < topN && i < len(epgIDs); i++ {
-			result = append(result, epgIDs[i])
-		}
 	}
 
 	return result

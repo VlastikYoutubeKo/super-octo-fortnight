@@ -16,9 +16,10 @@ func setupM3URoutes(mux *http.ServeMux) {
 		providerID := r.URL.Query().Get("provider")
 		categories := r.URL.Query().Get("categories") // comma separated
 		categoryNames := r.URL.Query().Get("category_names") // comma separated
+		countries := r.URL.Query().Get("countries") // comma separated
 		
-		if providerID == "" || (categories == "" && categoryNames == "") {
-			http.Error(w, "provider and either categories or category_names are required", 400)
+		if providerID == "" || (categories == "" && categoryNames == "" && countries == "") {
+			http.Error(w, "provider and either categories, category_names or countries are required", 400)
 			return
 		}
 
@@ -51,7 +52,27 @@ func setupM3URoutes(mux *http.ServeMux) {
 		var allStreams []map[string]interface{}
 		var catIDs []string
 		
-		if categoryNames != "" {
+		if countries != "" {
+			countryFilter := strings.Split(strings.ToUpper(countries), ",")
+			allCats := getCategories(provider, "live")
+			for _, c := range allCats {
+				name := strings.TrimSpace(strings.ToUpper(fmt.Sprintf("%v", c["name"])))
+				cleanName := strings.TrimPrefix(name, "[")
+				
+				for _, cc := range countryFilter {
+					cc = strings.TrimSpace(cc)
+					if cc == "" {
+						continue
+					}
+					// match exact, or followed by space, -, |, :, ]
+					if cleanName == cc || strings.HasPrefix(cleanName, cc+" ") || strings.HasPrefix(cleanName, cc+"-") || strings.HasPrefix(cleanName, cc+"|") || strings.HasPrefix(cleanName, cc+":") || strings.HasPrefix(cleanName, cc+"]") {
+						catIDs = append(catIDs, fmt.Sprintf("%v", c["id"]))
+						break
+					}
+				}
+			}
+			fmt.Printf("Resolved countries %s to IDs: %v\n", countries, catIDs)
+		} else if categoryNames != "" {
 			nameFilter := strings.Split(categoryNames, ",")
 			nameMap := make(map[string]bool)
 			for _, n := range nameFilter {

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // FetchEPGChannelIDs downloads EPG channels. Supports .xml, .xml.gz, .txt, or a directory URL (ends with /) to scrape all .txt files.
@@ -126,6 +127,57 @@ func fetchXmlEPG(epgUrl string) (map[string]string, error) {
 					channels[ch.ID] = name
 				}
 			}
+		}
+	}
+
+	return channels, nil
+}
+
+func FetchTVHeadendEPGChannels() (map[string]string, error) {
+	configLock.RLock()
+	tvh := Config.TVHeadend
+	configLock.RUnlock()
+
+	if tvh.URL == "" {
+		return nil, fmt.Errorf("TVHeadend URL is not configured")
+	}
+
+	url := strings.TrimRight(tvh.URL, "/") + "/api/epggrab/channel/grid"
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	
+	if tvh.Username != "" {
+		req.SetBasicAuth(tvh.Username, tvh.Password)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("TVHeadend API returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Entries []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"entries"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	channels := make(map[string]string)
+	for _, entry := range result.Entries {
+		if entry.ID != "" {
+			channels[entry.ID] = entry.Name
 		}
 	}
 

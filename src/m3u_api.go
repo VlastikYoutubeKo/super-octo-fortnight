@@ -141,7 +141,21 @@ func setupM3URoutes(mux *http.ServeMux) {
 
 				if ollamaUrl != "" || apiKey != "" {
 					epgChannels, err := FetchEPGChannelIDs(url)
-					if err == nil {
+					if err != nil {
+						epgChannels = make(map[string]string)
+						fmt.Printf("Auto-EPG fetch from url failed: %v\n", err)
+					}
+					
+					tvhChannels, tvhErr := FetchTVHeadendEPGChannels()
+					if tvhErr == nil {
+						for k, v := range tvhChannels {
+							epgChannels[k] = v
+						}
+					} else {
+						fmt.Printf("FetchTVHeadendEPGChannels failed: %v\n", tvhErr)
+					}
+
+					if len(epgChannels) > 0 {
 						var matched map[string]string
 						var matchErr error
 
@@ -260,7 +274,19 @@ func setupM3URoutes(mux *http.ServeMux) {
 
 		epgChannels, err := FetchEPGChannelIDs(req.EpgUrl)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"Failed to fetch EPG: %v"}`, err), 500)
+			epgChannels = make(map[string]string)
+			fmt.Printf("Manual match fetch from url failed: %v\n", err)
+		}
+		
+		tvhChannels, tvhErr := FetchTVHeadendEPGChannels()
+		if tvhErr == nil {
+			for k, v := range tvhChannels {
+				epgChannels[k] = v
+			}
+		}
+
+		if len(epgChannels) == 0 {
+			http.Error(w, `{"error":"Failed to fetch any EPG channels from URL or TVHeadend"}`, 500)
 			return
 		}
 

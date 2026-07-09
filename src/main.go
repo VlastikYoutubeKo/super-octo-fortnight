@@ -100,6 +100,7 @@ func main() {
 	loadConfig()
 	detectXtream()
 	loadEpgMapping()
+	InitStats()
 	
 	// Download fallback video locally so ffmpeg starts instantly
 	go downloadFallbackVideo()

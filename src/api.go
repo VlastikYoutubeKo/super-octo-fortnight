@@ -422,6 +422,61 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		w.Write([]byte(m3uContent))
 	})
 
+	mux.HandleFunc("GET /api/epg/mapping", func(w http.ResponseWriter, r *http.Request) {
+		epgMappingLock.RLock()
+		defer epgMappingLock.RUnlock()
+		sendJSON(w, EPGMapping)
+	})
+
+	mux.HandleFunc("PUT /api/epg/mapping", func(w http.ResponseWriter, r *http.Request) {
+		var data struct {
+			Channel string `json:"channel"`
+			EpgID   string `json:"epg_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, 400)
+			return
+		}
+		if data.Channel == "" {
+			http.Error(w, `{"error":"channel is required"}`, 400)
+			return
+		}
+		epgMappingLock.Lock()
+		EPGMapping[data.Channel] = data.EpgID
+		epgMappingLock.Unlock()
+		saveEpgMapping()
+		sendJSON(w, map[string]bool{"ok": true})
+	})
+
+	mux.HandleFunc("DELETE /api/epg/mapping", func(w http.ResponseWriter, r *http.Request) {
+		var data struct {
+			Channel string `json:"channel"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			http.Error(w, `{"error":"invalid JSON"}`, 400)
+			return
+		}
+		if data.Channel == "" {
+			http.Error(w, `{"error":"channel is required"}`, 400)
+			return
+		}
+		epgMappingLock.Lock()
+		delete(EPGMapping, data.Channel)
+		epgMappingLock.Unlock()
+		saveEpgMapping()
+		sendJSON(w, map[string]bool{"ok": true})
+	})
+
+	mux.HandleFunc("GET /api/stats", func(w http.ResponseWriter, r *http.Request) {
+		stats := GetChannelStats()
+		sendJSON(w, stats)
+	})
+
+	mux.HandleFunc("DELETE /api/stats", func(w http.ResponseWriter, r *http.Request) {
+		ClearStats()
+		sendJSON(w, map[string]bool{"success": true})
+	})
+
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

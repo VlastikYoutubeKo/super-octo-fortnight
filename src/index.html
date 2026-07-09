@@ -92,11 +92,27 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
 .epg-title { font-size: 13px; color: #fff; font-weight: 600; margin-bottom: 4px; }
 .epg-desc { font-size: 12px; color: var(--text-muted); }
 .svg-icon { width: 16px; height: 16px; fill: currentColor; }
+.epg-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.epg-table th { text-align: left; padding: 10px 12px; background: var(--bg-base); color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid var(--border); position: sticky; top: 0; }
+.epg-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.epg-table tr:hover td { background: rgba(59,130,246,0.05); }
+.epg-table input { background: transparent; border: 1px solid transparent; color: var(--text-main); padding: 6px 8px; border-radius: 4px; font-family: monospace; font-size: 12px; width: 100%; transition: border-color 0.2s; }
+.epg-table input:focus { border-color: var(--accent); background: var(--bg-base); outline: none; }
+.epg-filter { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+.epg-filter input { flex: 1; }
+.stat-row { display: grid; grid-template-columns: 1fr 80px 100px 140px; gap: 10px; padding: 12px 15px; background: var(--bg-base); border-radius: 8px; margin-bottom: 8px; align-items: center; border-left: 3px solid var(--accent); }
+.stat-row:hover { transform: translateX(3px); transition: transform 0.2s; }
+.stat-row .ch-name { font-weight: 600; color: #fff; font-size: 14px; }
+.stat-row .ch-views { text-align: center; color: var(--accent); font-weight: 700; font-size: 16px; }
+.stat-row .ch-time { text-align: right; color: var(--text-muted); font-size: 13px; }
+.stat-row .ch-last { text-align: right; color: var(--text-muted); font-size: 11px; }
 @media(max-width:768px) {
   .stats { grid-template-columns: 1fr 1fr; }
   .stream-header, .provider-header { flex-direction: column; align-items: flex-start; gap: 12px; }
   .controls { flex-direction: column; }
   button { width: 100%; }
+  .stat-row { grid-template-columns: 1fr 60px; }
+  .stat-row .ch-time, .stat-row .ch-last { display: none; }
 }
 </style>
 </head>
@@ -115,7 +131,8 @@ const API = window.location.protocol + '//' + window.location.host + '/api';
 let S = {
   status: null, config: null, tab: 'dashboard', loading: true, error: null,
   provider: null, categories: null, category: null, streams: null, modal: null,
-  perPage: 10, catPage: 0, showCats: false, epg: null, epgStream: null
+  perPage: 10, catPage: 0, showCats: false, epg: null, epgStream: null,
+  epgMapping: null, epgFilter: '', channelStats: null
 };
 
 // SVG Icons
@@ -576,22 +593,163 @@ async function matchEpg() {
   btn.innerHTML = '🤖 Auto-Match via AI';
 }
 
+// === EPG MAPPING EDITOR ===
+function EpgMapping() {
+  if (!S.epgMapping) return `<div class="loading">Loading EPG mappings...</div>`;
+  const entries = Object.entries(S.epgMapping);
+  const filter = (S.epgFilter || '').toLowerCase();
+  const filtered = filter ? entries.filter(([k,v]) => k.toLowerCase().includes(filter) || v.toLowerCase().includes(filter)) : entries;
+  filtered.sort((a,b) => a[0].localeCompare(b[0]));
+
+  return `<div class="controls">
+    <button onclick="loadEpgMapping()">${icons.refresh} Refresh</button>
+    <button class="danger" onclick="if(confirm('Clear ALL EPG mappings?')){clearEpgMapping()}">${icons.trash} Clear All</button>
+    <span style="color:var(--text-muted); font-size:13px; margin-left:auto;">${filtered.length} / ${entries.length} mappings</span>
+  </div>
+  <div class="card">
+    <h3 style="margin-bottom:15px">EPG Mapping Editor</h3>
+    <div class="epg-filter">
+      <input type="text" placeholder="Filter channels or EPG IDs..." value="${S.epgFilter||''}" oninput="S.epgFilter=this.value;renderEpgTable()">
+    </div>
+    <div id="epg-mapping-table" style="max-height:65vh; overflow-y:auto;">
+      ${EpgMappingTable(filtered)}
+    </div>
+  </div>`;
+}
+
+function EpgMappingTable(filtered) {
+  if (filtered.length === 0) return '<div class="empty">No mappings found' + (S.epgFilter ? ' matching filter' : '') + '</div>';
+  return `<table class="epg-table">
+    <thead><tr><th>Channel Name</th><th>EPG ID (tvg-id)</th><th style="width:80px">Actions</th></tr></thead>
+    <tbody>
+    ${filtered.map(([ch, id]) => `<tr>
+      <td style="font-weight:500; color:#fff">${ch}</td>
+      <td><input value="${id}" onchange="updateEpgMapping('${ch.replace(/'/g,"\\'").replace(/\\/g,'\\\\')}', this.value)" placeholder="Enter EPG ID..."></td>
+      <td><button class="danger" style="padding:4px 8px; font-size:11px" onclick="deleteEpgMapping('${ch.replace(/'/g,"\\'").replace(/\\/g,'\\\\')}')">${icons.trash}</button></td>
+    </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function renderEpgTable() {
+  const el = document.getElementById('epg-mapping-table');
+  if (!el || !S.epgMapping) return;
+  const entries = Object.entries(S.epgMapping);
+  const filter = (S.epgFilter || '').toLowerCase();
+  const filtered = filter ? entries.filter(([k,v]) => k.toLowerCase().includes(filter) || v.toLowerCase().includes(filter)) : entries;
+  filtered.sort((a,b) => a[0].localeCompare(b[0]));
+  el.innerHTML = EpgMappingTable(filtered);
+}
+
+async function loadEpgMapping() {
+  try { S.epgMapping = await get('/epg/mapping'); } catch(e) { S.epgMapping = {}; }
+  render();
+}
+
+async function updateEpgMapping(channel, epgId) {
+  try {
+    await fetch(API + '/epg/mapping', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({channel, epg_id: epgId}) });
+    S.epgMapping[channel] = epgId;
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function deleteEpgMapping(channel) {
+  try {
+    await fetch(API + '/epg/mapping', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({channel}) });
+    delete S.epgMapping[channel];
+    renderEpgTable();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function clearEpgMapping() {
+  // delete all one by one is slow, but safe
+  for (const ch of Object.keys(S.epgMapping)) {
+    await fetch(API + '/epg/mapping', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({channel: ch}) });
+  }
+  S.epgMapping = {};
+  render();
+}
+
+// === CHANNEL STATS ===
+function ChannelStats() {
+  if (!S.channelStats) return `<div class="loading">Loading statistics...</div>`;
+  const stats = S.channelStats;
+
+  return `<div class="controls">
+    <button onclick="loadChannelStats()">${icons.refresh} Refresh</button>
+    <button class="danger" onclick="if(confirm('Clear all viewing stats?')){clearChannelStats()}">${icons.trash} Reset Stats</button>
+    <span style="color:var(--text-muted); font-size:13px; margin-left:auto;">${stats.length} channels tracked</span>
+  </div>
+  <div class="card">
+    <h3 style="margin-bottom:15px">Viewing Statistics</h3>
+    ${stats.length === 0 ? '<div class="empty">No viewing data yet. Stats are recorded when channels are watched.</div>' : `
+      <div style="display:grid; grid-template-columns: 1fr 80px 100px 140px; gap:10px; padding:0 15px 8px; font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:1px; font-weight:600;">
+        <div>Channel</div><div style="text-align:center">Views</div><div style="text-align:right">Watch Time</div><div style="text-align:right">Last Watched</div>
+      </div>
+      ${stats.map(s => `<div class="stat-row">
+        <div class="ch-name">${s.Name || s.Key || 'Unknown'}</div>
+        <div class="ch-views">${s.Views}</div>
+        <div class="ch-time">${fmtDuration(s.TotalSeconds)}</div>
+        <div class="ch-last">${s.LastWatched ? timeAgo(s.LastWatched) : 'N/A'}</div>
+      </div>`).join('')}
+    `}
+  </div>`;
+}
+
+function fmtDuration(secs) {
+  if (!secs || secs <= 0) return '0m';
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+function timeAgo(iso) {
+  if (!iso) return 'N/A';
+  const d = new Date(iso);
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+async function loadChannelStats() {
+  try { S.channelStats = await get('/stats'); } catch(e) { S.channelStats = []; }
+  render();
+}
+
+async function clearChannelStats() {
+  await del('/stats');
+  S.channelStats = [];
+  render();
+}
+
 function render() {
   const a = document.getElementById('app');
   if (S.loading && !S.status) { a.innerHTML = '<div class="loading">Connecting to API...</div>'; return; }
   if (S.error) { a.innerHTML = '<div class="error" style="font-size:15px"><strong>Connection Error:</strong> ' + S.error + '</div>'; return; }
   
-  const tabs = ['dashboard', 'sources', 'xtream', 'playlist', 'epg'];
+  const tabs = ['dashboard', 'sources', 'xtream', 'playlist', 'epg', 'mapping', 'stats'];
+  const tabLabels = {dashboard:'Dashboard',sources:'Sources',xtream:'Xtream',playlist:'Playlist',epg:'AI EPG',mapping:'EPG Map',stats:'Stats'};
   a.innerHTML = `
     <div class="tabs">
-      ${tabs.map(t => `<button class="tab ${S.tab === t ? 'active' : ''}" onclick="S.tab='${t}';render()">${t.charAt(0).toUpperCase() + t.slice(1)}</button>`).join('')}
+      ${tabs.map(t => `<button class="tab ${S.tab === t ? 'active' : ''}" onclick="switchTab('${t}')">${tabLabels[t]||t}</button>`).join('')}
     </div>
     <div class="tab-content ${S.tab === 'dashboard' ? 'active' : ''}">${Dashboard()}</div>
     <div class="tab-content ${S.tab === 'sources' ? 'active' : ''}">${Sources()}</div>
     <div class="tab-content ${S.tab === 'xtream' ? 'active' : ''}">${Xtream()}</div>
     <div class="tab-content ${S.tab === 'playlist' ? 'active' : ''}">${Playlist()}</div>
     <div class="tab-content ${S.tab === 'epg' ? 'active' : ''}">${Epg()}</div>
+    <div class="tab-content ${S.tab === 'mapping' ? 'active' : ''}">${EpgMapping()}</div>
+    <div class="tab-content ${S.tab === 'stats' ? 'active' : ''}">${ChannelStats()}</div>
   `;
+}
+
+function switchTab(t) {
+  S.tab = t;
+  if (t === 'mapping' && !S.epgMapping) { loadEpgMapping(); return; }
+  if (t === 'stats' && !S.channelStats) { loadChannelStats(); return; }
+  render();
 }
 
 setInterval(() => { if (S.tab === 'dashboard' && !S.loading) load(true); }, 3000);

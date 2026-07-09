@@ -204,11 +204,18 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		go startProducer(s) 
 	}
 
+	RecordStreamStart(key)
+	connectTime := time.Now()
+
 	defer func() {
 		s.Mu.Lock()
 		delete(s.Clients, clientChan)
 		clientsCount = len(s.Clients)
 		s.Mu.Unlock()
+
+		duration := int64(time.Since(connectTime).Seconds())
+		RecordStreamEnd(key, duration)
+
 		if clientsCount == 0 { time.AfterFunc(CleanupDelay, func() { cleanupStream(key) }) }
 	}()
 

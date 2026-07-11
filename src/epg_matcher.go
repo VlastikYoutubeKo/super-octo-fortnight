@@ -58,10 +58,10 @@ func fetchAllTxtFromDirectory(dirUrl string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	html := string(body)
 	channels := make(map[string]string)
-	
+
 	// simple manual parsing for href="...txt"
 	parts := strings.Split(html, `href="`)
 	for i := 1; i < len(parts); i++ {
@@ -142,17 +142,18 @@ func FetchTVHeadendEPGChannels() (map[string]string, error) {
 		return nil, fmt.Errorf("TVHeadend URL is not configured")
 	}
 
-	url := strings.TrimRight(tvh.URL, "/") + "/api/epggrab/channel/grid"
+	// TVHeadend grids default to 50 rows without an explicit limit
+	url := strings.TrimRight(tvh.URL, "/") + "/api/epggrab/channel/grid?limit=100000"
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if tvh.Username != "" {
 		req.SetBasicAuth(tvh.Username, tvh.Password)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -215,25 +216,39 @@ func MatchWithGemini(apiKeys []string, unmappedChannels []string, epgChannels ma
 	}
 
 	var matchTasks []string
+	offered := make(map[string]map[string]bool)
 	for _, ch := range unmappedChannels {
-		topIDs := GetTopCandidates(ch, allIDs, 15, 3)
+		topIDs := GetTopCandidatesForChannel(ch, allIDs, 7, 3)
+		if len(topIDs) == 0 {
+			// no candidate passed brand check -> skip AI entirely, mark unmapped
+			continue
+		}
 		var opts []string
+		offered[ch] = make(map[string]bool, len(topIDs))
 		for _, id := range topIDs {
+			offered[ch][id] = true
 			opts = append(opts, fmt.Sprintf("%s (ID: %s)", epgChannels[id], id))
 		}
 		matchTasks = append(matchTasks, fmt.Sprintf("IPTV Channel: '%s'\nAvailable Options:\n%s\n", ch, strings.Join(opts, "\n")))
 	}
 
-	prompt := fmt.Sprintf(`You are a smart TV channel EPG assigner. 
-For each IPTV channel, I will provide a short list of 15 candidate EPG options. 
-Please select the best matching EPG ID from its options. If none match, leave it empty.
+	if len(matchTasks) == 0 {
+		return make(map[string]string), nil
+	}
+
+	prompt := fmt.Sprintf(`You are an extremely strict TV channel EPG assigner. 
+For each IPTV channel, I will provide a short list of 7 candidate EPG options. 
+Please select the exact matching EPG ID from its options. If NONE are a perfect logical match, YOU MUST LEAVE IT EMPTY.
 
 CRITICAL RULES:
 1. You MUST select the "ID" EXACTLY as it appears in the options for that specific channel. 
 2. Do not invent, guess, or alter IDs. 
 3. Return ONLY a valid JSON object where the key is the exact "IPTV Channel" and the value is the exact matched "ID".
 4. If a specific regional channel is requested (e.g., 'ITV CENTRAL WEST' or 'BBC One North West') and its exact EPG ID is not in the options, you MUST match it to its national version if available (e.g., 'ITV 1', 'BBC One', 'ITV.uk', 'ITV1.uk', etc.).
-5. If NO option is a logical match (e.g., completely different channel like '5Action' vs 'TNT Sports 5 HD'), YOU MUST LEAVE IT EMPTY. DO NOT GUESS!
+5. If NO option is a logical match, YOU MUST LEAVE IT EMPTY. DO NOT GUESS!
+6. NEVER match based only on shared numbers or country codes! (e.g., '4 FUN KIDS' is NOT 'Polsat.Sport.Premium.4.pl' just because they both have a '4' and '.pl'. 'DISCOVERY' is NOT 'Discovery.Channel.(niem.).pl' if you know 'niem' means German. 'AXN' is NOT 'tvregionalna.pl'). If the brand name does not match, RETURN AN EMPTY STRING "".
+7. The country prefix of the IPTV channel ('CZ:', 'PL:', 'DE:') MUST agree with the country suffix of the EPG ID ('.cz', '.pl', '.de'). 'CZ: AMC' is NOT 'AMC.pl' - it is a Czech feed, not a Polish one. If no option shares the channel's country, RETURN AN EMPTY STRING "".
+8. Video-on-demand, PPV, 24/7 movie/series loops and sporting fixtures (e.g. 'DE: AGATHA ALL ALONG', 'UK: [24/7 O-D] RAMBO', 'PPV EVENTS 12', 'Team A vs Team B') are NOT TV channels. They have no EPG. RETURN AN EMPTY STRING "".
 
 Channels to match:
 %s`, strings.Join(matchTasks, "\n"))
@@ -263,14 +278,14 @@ Channels to match:
 		if apiKey == "" {
 			continue
 		}
-		
+
 		var keyPreview string
 		if len(apiKey) > 8 {
 			keyPreview = "..." + apiKey[len(apiKey)-4:]
 		} else {
 			keyPreview = apiKey
 		}
-		
+
 		url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=%s", apiKey)
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
@@ -315,11 +330,19 @@ Channels to match:
 
 	log.Printf("Gemini AI Match Response:\n%s\n", responseText)
 
-	return parseJSONResponse(responseText, epgChannels)
+	return parseJSONResponse(responseText, epgChannels, offered)
 }
 
-// parseJSONResponse processes the raw JSON string from AI models
-func parseJSONResponse(responseText string, epgChannels map[string]string) (map[string]string, error) {
+func normalizeEPGID(id string) string {
+	id = strings.ReplaceAll(id, ".", "")
+	id = strings.ReplaceAll(id, "-", "")
+	return strings.ToLower(id)
+}
+
+// parseJSONResponse processes the raw JSON string from AI models. offered maps each
+// channel to the exact set of IDs it was shown; an ID outside that set is a
+// hallucination (or an option stolen from another channel) and is rejected.
+func parseJSONResponse(responseText string, epgChannels map[string]string, offered map[string]map[string]bool) (map[string]string, error) {
 	var parsedResult map[string]string
 	if err := json.Unmarshal([]byte(responseText), &parsedResult); err != nil {
 		log.Printf("Failed to parse AI JSON: %s", responseText)
@@ -331,24 +354,25 @@ func parseJSONResponse(responseText string, epgChannels map[string]string) (map[
 		if matchedID == "" {
 			continue
 		}
-		
-		// 1. Strict match
-		if _, ok := epgChannels[matchedID]; ok {
+
+		allowed, hasOptions := offered[rawName]
+		if !hasOptions {
+			log.Printf("AI returned a channel it was never asked about: %q", rawName)
+			continue
+		}
+
+		// 1. Strict match against the options this channel was actually offered
+		if allowed[matchedID] {
 			result[rawName] = matchedID
 			continue
 		}
 
-		// 2. Auto-Correction / Fuzzy Match fallback for hallucinations
-		cleanID := strings.ReplaceAll(matchedID, ".", "")
-		cleanID = strings.ReplaceAll(cleanID, "-", "")
-		cleanID = strings.ToLower(cleanID)
-
+		// 2. Auto-Correction for near-miss hallucinations (e.g. "TVN7.pl" -> "TVN.7.pl"),
+		//    still constrained to the offered options.
+		cleanID := normalizeEPGID(matchedID)
 		bestMatch := ""
-		for actualID := range epgChannels {
-			cleanActual := strings.ReplaceAll(actualID, ".", "")
-			cleanActual = strings.ReplaceAll(cleanActual, "-", "")
-			cleanActual = strings.ToLower(cleanActual)
-			if cleanID == cleanActual {
+		for actualID := range allowed {
+			if cleanID == normalizeEPGID(actualID) {
 				bestMatch = actualID
 				break
 			}
@@ -358,7 +382,7 @@ func parseJSONResponse(responseText string, epgChannels map[string]string) (map[
 			log.Printf("Auto-corrected AI hallucination: %s -> %s", matchedID, bestMatch)
 			result[rawName] = bestMatch
 		} else {
-			log.Printf("AI suggested invalid EPG ID that couldn't be auto-corrected: %s", matchedID)
+			log.Printf("Rejected AI EPG ID %q for %q: not among the offered options", matchedID, rawName)
 		}
 	}
 

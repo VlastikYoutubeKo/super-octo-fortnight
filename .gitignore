@@ -39,3 +39,17 @@ venv/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# EPG runtime data & backups (never commit)
+epg_mapping.json
+epg_mapping.json.*
+channel_stats.json
+m3u_cache_*.m3u
+fallback.mp4
+*.bak.*
+epg.py.bak.*
+proxy_server.*
+get_pl_channels.py
+generate_mapping_task.py
+pl_epg.txt
+test_run.log

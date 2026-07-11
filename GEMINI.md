@@ -18,3 +18,10 @@
 - Binaries are compiled for `linux/amd64`, `linux/arm64`, `windows/amd64`, and `windows/arm64`.
 - They are automatically built and published to GitHub Releases via a `.github/workflows/release.yml` GitHub Action whenever a new tag (e.g., `v1.x.x`) is pushed to the repository.
 - **Git Tags**: When creating Git tags for this project, always use annotated tags (`git tag -a`) and include a concise summary of the key changes since the last version in the tag message.
+
+## EPG Subsystem
+- **Read `EPG_SYSTEM.md` before touching anything EPG-related.** It documents the
+  matcher rules in `src/fuzzy.go`, the daily maintenance job (`POST /api/epg/maintain`,
+  auto-runs 05:15), the TVHeadend relink mechanism, operational runbook, and the
+  invariants whose violation caused past incidents (e.g. TVHeadend grids default to
+  50 rows without `limit=`; a mapping to an unloaded EPG id is worse than none).

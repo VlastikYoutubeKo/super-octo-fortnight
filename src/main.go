@@ -55,19 +55,19 @@ type AppConfig struct {
 }
 
 var (
-	Config       AppConfig
-	configLock   sync.RWMutex
-	streams      = make(map[string]*Stream)
-	streamsLock  sync.RWMutex
-	startTime    time.Time
-	
+	Config      AppConfig
+	configLock  sync.RWMutex
+	streams     = make(map[string]*Stream)
+	streamsLock sync.RWMutex
+	startTime   time.Time
+
 	// Global Channel Name Cache (SourceID:ChannelID -> Name)
 	ChannelNames     = make(map[string]string)
 	channelNamesLock sync.RWMutex
-	
+
 	// EPG Mapping (Stream Name -> tvg-id)
-	EPGMapping       = make(map[string]string)
-	epgMappingLock   sync.RWMutex
+	EPGMapping     = make(map[string]string)
+	epgMappingLock sync.RWMutex
 
 	cooldowns     = make(map[string]time.Time)
 	cooldownsLock sync.RWMutex
@@ -88,7 +88,7 @@ const (
 	SourceCheckTimeout  = 15 * time.Second
 	TVHCheckInterval    = 3 * time.Second
 	FallbackURL         = "https://theariatv.github.io/channeldead.mp4"
-    TVHGracePeriod      = 60 * time.Second
+	TVHGracePeriod      = 60 * time.Second
 )
 
 func main() {
@@ -101,10 +101,10 @@ func main() {
 	detectXtream()
 	loadEpgMapping()
 	InitStats()
-	
+
 	// Download fallback video locally so ffmpeg starts instantly
 	go downloadFallbackVideo()
-	
+
 	// Start background channel name refresher
 	go refreshChannelNamesLoop()
 
@@ -114,6 +114,10 @@ func main() {
 	mux := http.NewServeMux()
 	setupAPIRoutes(mux)
 	setupM3URoutes(mux)
+	setupMaintainRoutes(mux)
+
+	// daily EPG janitor: sanitize mappings + force-correct TVHeadend channel links
+	go epgMaintenanceLoop()
 
 	go func() {
 		log.Printf("API running on :%d", APIPort)
@@ -237,7 +241,7 @@ func saveEpgMapping() {
 		return
 	}
 	defer file.Close()
-	
+
 	epgMappingLock.RLock()
 	defer epgMappingLock.RUnlock()
 	json.NewEncoder(file).Encode(EPGMapping)

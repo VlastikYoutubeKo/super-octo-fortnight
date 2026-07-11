@@ -177,12 +177,10 @@ func setupM3URoutes(mux *http.ServeMux) {
 								allIDs = append(allIDs, id)
 							}
 							for _, ch := range unmappedChannels {
-								top := GetTopCandidates(ch, allIDs, 1, 10)
-								if len(top) > 0 {
-									// Basic safety check: don't randomly assign if name is too short
-									if len(ch) > 2 {
-										matched[ch] = top[0]
-									}
+								// No AI to veto a bad guess here, so only accept an
+								// unambiguous same-country brand match.
+								if id := GetBestCandidateStrict(ch, allIDs); id != "" {
+									matched[ch] = id
 								}
 							}
 						}
@@ -311,9 +309,8 @@ func setupM3URoutes(mux *http.ServeMux) {
 				allIDs = append(allIDs, id)
 			}
 			for _, ch := range req.Channels {
-				top := GetTopCandidates(ch, allIDs, 1, 10)
-				if len(top) > 0 && len(ch) > 2 {
-					matched[ch] = top[0]
+				if id := GetBestCandidateStrict(ch, allIDs); id != "" {
+					matched[ch] = id
 				}
 			}
 		}
@@ -335,28 +332,4 @@ func setupM3URoutes(mux *http.ServeMux) {
 		})
 	})
 
-	// 3. Get EPG Mapping
-	mux.HandleFunc("GET /api/epg/mapping", func(w http.ResponseWriter, r *http.Request) {
-		epgMappingLock.RLock()
-		defer epgMappingLock.RUnlock()
-		sendJSON(w, EPGMapping)
-	})
-
-	// 4. Update EPG Mapping manually
-	mux.HandleFunc("POST /api/epg/mapping", func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid json", 400)
-			return
-		}
-
-		epgMappingLock.Lock()
-		for k, v := range req {
-			EPGMapping[k] = v
-		}
-		epgMappingLock.Unlock()
-
-		saveEpgMapping()
-		sendJSON(w, map[string]string{"status": "saved"})
-	})
 }

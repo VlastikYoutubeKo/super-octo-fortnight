@@ -698,10 +698,10 @@ function ChannelStats() {
         <div>Channel</div><div style="text-align:center">Views</div><div style="text-align:right">Watch Time</div><div style="text-align:right">Last Watched</div>
       </div>
       ${stats.map(s => `<div class="stat-row">
-        <div class="ch-name">${s.Name || s.Key || 'Unknown'}</div>
-        <div class="ch-views">${s.Views}</div>
-        <div class="ch-time">${fmtDuration(s.TotalSeconds)}</div>
-        <div class="ch-last">${s.LastWatched ? timeAgo(s.LastWatched) : 'N/A'}</div>
+        <div class="ch-name">${s.name || s.key || 'Unknown'}</div>
+        <div class="ch-views">${s.views || 0}</div>
+        <div class="ch-time">${fmtDuration(s.total_seconds || 0)}</div>
+        <div class="ch-last">${s.last_watched ? timeAgo(s.last_watched) : 'N/A'}</div>
       </div>`).join('')}
     `}
   </div>`;

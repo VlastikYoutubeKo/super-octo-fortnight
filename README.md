@@ -31,6 +31,22 @@ go build -o ../proxy_server *.go
 - **Proxy Stream Video:** `http://localhost:9000`
 - **REST API & Web UI:** `http://localhost:9005`
 
+## 🛡️ Stream Proxies & Webshare API
+
+To hide your server's IP address from upstream IPTV providers, you can enable **Stream Proxies**.
+
+### How to use Stream Proxies (Optional)
+1. Add your HTTP proxy URLs (e.g., `http://user:pass@host:port`) into the `"proxies"` array inside your `config.json`.
+2. Open the Web UI on `http://localhost:9005`.
+3. Click the **Stream Proxies** button to toggle it `ON`.
+4. The proxy server will instantly start randomly routing every new channel stream request through one of your defined proxies.
+
+### Webshare API Bandwidth Monitoring
+If you use [Webshare](https://webshare.io) proxies and have a limited bandwidth plan (e.g., 1TB/month):
+- Go to **Settings** in the Web UI.
+- Paste your Webshare API Token into the `Webshare API Key` field.
+- The Dashboard will automatically display a **Webshare Proxy Bandwidth (30 Days)** widget, updating your exact GB usage and remaining limit every 30 minutes in the background, keeping you safe from over-usage!
+
 ---
 
 ## 📜 Changelog

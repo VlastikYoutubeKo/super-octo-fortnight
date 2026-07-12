@@ -99,8 +99,13 @@ func setupAPIRoutes(mux *http.ServeMux) {
         rm := Config.RedirectMode
         im := Config.InternalM3u8
         eng := Config.Engine
+        usePx := Config.UseProxiesForStreams
         if eng == "" { eng = "http" }
         configLock.RUnlock()
+
+        wsStatsLock.RLock()
+        stats := wsStats
+        wsStatsLock.RUnlock()
 
         sendJSON(w, map[string]interface{}{
         "streams":          streamList,
@@ -111,7 +116,9 @@ func setupAPIRoutes(mux *http.ServeMux) {
             "auto_fallback":    af,
             "redirect_mode":    rm,
             "internal_m3u8":    im,
+            "use_proxies":      usePx,
             "engine":           eng,
+            "webshare_stats":   stats,
             "retry_interval":   int(SourceRetryInterval.Seconds()),			"uptime":           int(time.Since(startTime).Seconds()),
             "cooldowns":        cdList,
 		})
@@ -138,6 +145,9 @@ func setupAPIRoutes(mux *http.ServeMux) {
             if data.Ppproxies != nil { Config.Ppproxies = data.Ppproxies }
             if data.AllowedIPs != nil { Config.AllowedIPs = data.AllowedIPs }
             if data.AllowedDomains != nil { Config.AllowedDomains = data.AllowedDomains }
+            Config.UseProxiesForStreams = data.UseProxiesForStreams
+            if data.GeminiAPIKey != "" { Config.GeminiAPIKey = data.GeminiAPIKey }
+            if data.WebshareAPIKey != "" { Config.WebshareAPIKey = data.WebshareAPIKey }
             configLock.Unlock()
             
 			detectXtream()
@@ -223,6 +233,16 @@ func setupAPIRoutes(mux *http.ServeMux) {
 		saveConfig()
 		log.Printf("Internal M3U8 mode: %v", im)
 		sendJSON(w, map[string]bool{"internal_m3u8": im})
+	})
+
+	mux.HandleFunc("POST /api/toggle_proxy", func(w http.ResponseWriter, r *http.Request) {
+        configLock.Lock()
+		Config.UseProxiesForStreams = !Config.UseProxiesForStreams
+        up := Config.UseProxiesForStreams
+        configLock.Unlock()
+		saveConfig()
+		log.Printf("Use Proxies For Streams: %v", up)
+		sendJSON(w, map[string]bool{"use_proxies": up})
 	})
 
 	mux.HandleFunc("POST /api/engine", func(w http.ResponseWriter, r *http.Request) {

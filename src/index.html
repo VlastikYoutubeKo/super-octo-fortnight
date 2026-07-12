@@ -212,6 +212,17 @@ function DashboardData() {
   const st = S.status;
   return `
   ${Stats()}
+  ${st.webshare_stats && st.webshare_stats.total_gb > 0 ? `
+  <div class="card" style="margin-top:20px;">
+    <h3>Webshare Proxy Bandwidth (30 Days)</h3>
+    <div style="margin-top:10px; font-size:14px; color:var(--text-muted); display:flex; justify-content:space-between">
+      <span>${st.webshare_stats.used_gb.toFixed(2)} GB Used</span>
+      <span>${st.webshare_stats.total_gb.toFixed(0)} GB Total</span>
+    </div>
+    <div style="margin-top:5px; height:8px; background:var(--bg-lighter); border-radius:4px; overflow:hidden">
+      <div style="height:100%; width:${Math.min(100, (st.webshare_stats.used_gb / st.webshare_stats.total_gb) * 100)}%; background:${(st.webshare_stats.used_gb / st.webshare_stats.total_gb) > 0.8 ? 'var(--danger)' : 'var(--accent)'}"></div>
+    </div>
+  </div>` : ''}
   ${st.cooldowns && st.cooldowns.length > 0 ? `<div class="card"><h3>Cooldowns</h3>${st.cooldowns.map(c => `<div style="margin-top:10px; font-family:monospace; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;"><code>${c.key}</code> <span style="color:var(--warning); float:right">${c.remaining}s remaining</span></div>`).join('')}</div>` : ''}
   <div class="card">
     <h3 style="margin-bottom:15px; display:flex; align-items:center; gap:8px;">Active Streams <span class="badge">${st.streams.length}</span></h3>

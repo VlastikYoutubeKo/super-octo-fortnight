@@ -49,14 +49,32 @@ type AppConfig struct {
 	AllowedIPs      []string            `json:"allowed_ips"`
 	AllowedDomains  []string            `json:"allowed_domains"`
 	GeminiAPIKey    string              `json:"gemini_api_key"`
-	OllamaAPIUrl    string              `json:"ollama_api_url"`
-	OllamaAPIKey    string              `json:"ollama_api_key"`
-	OllamaModel     string              `json:"ollama_model"`
+	OllamaAPIUrl         string              `json:"ollama_api_url"`
+	OllamaAPIKey         string              `json:"ollama_api_key"`
+	OllamaModel          string              `json:"ollama_model"`
+	WebshareAPIKey       string              `json:"webshare_api_key"`
+	UseProxiesForStreams bool                `json:"use_proxies_for_streams"`
+}
+
+type EPGMatcherRule struct {
+	Type  string `json:"type"`  // "exact", "regex", "prefix"
+	Value string `json:"value"`
+}
+
+type WebshareStats struct {
+	UsedGB     float64 `json:"used_gb"`
+	TotalGB    float64 `json:"total_gb"`
+	LastUpdate int64   `json:"last_update"`
 }
 
 var (
-	Config      AppConfig
-	configLock  sync.RWMutex
+	Config          AppConfig
+	ConfigPath      = "config.json"
+	configLock      sync.RWMutex
+
+	wsStats         WebshareStats
+	wsStatsLock     sync.RWMutex
+
 	streams     = make(map[string]*Stream)
 	streamsLock sync.RWMutex
 	startTime   time.Time
@@ -110,6 +128,7 @@ func main() {
 
 	go monitorTVH()
 	go monitorSourceRecovery()
+	go monitorWebshareStats()
 
 	mux := http.NewServeMux()
 	setupAPIRoutes(mux)

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -121,6 +122,19 @@ func startProducer(s *Stream) {
 						srcUrl = filepath.Join(scriptDir, "fallback.mp4")
 					} else {
 						args = []string{"-hide_banner", "-loglevel", "warning", "-user_agent", ua}
+						
+						configLock.RLock()
+						useProxies := Config.UseProxiesForStreams
+						configLock.RUnlock()
+						
+						if useProxies {
+							proxies := getProxies()
+							if len(proxies) > 0 {
+								randomProxy := proxies[rand.Intn(len(proxies))]
+								args = append(args, "-http_proxy", randomProxy)
+							}
+						}
+						
 						args = append(args, "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5", "-reconnect_on_network_error", "1", "-reconnect_on_http_error", "5xx", "-rw_timeout", "20000000")
 					}
 					args = append(args, "-analyzeduration", "15000000", "-probesize", "50000000")
@@ -196,6 +210,20 @@ func startProducer(s *Stream) {
 					}).DialContext,
 					ResponseHeaderTimeout: 3 * time.Second,
 				}
+				
+				configLock.RLock()
+				useProxies := Config.UseProxiesForStreams
+				configLock.RUnlock()
+				
+				if useProxies {
+					proxies := getProxies()
+					if len(proxies) > 0 {
+						if proxyUrl, err := url.Parse(proxies[rand.Intn(len(proxies))]); err == nil {
+							transport.Proxy = http.ProxyURL(proxyUrl)
+						}
+					}
+				}
+
 				client := &http.Client{Transport: transport}
 
 				resp, err := client.Do(req)

@@ -735,13 +735,54 @@ async function clearChannelStats() {
   render();
 }
 
+function SettingsTab() {
+  const c = S.config;
+  return `<div class="card">
+    <h3 style="margin-bottom:15px">Security & API Settings</h3>
+    
+    <label>Stream Proxies (one per line, http://user:pass@host:port):</label>
+    <textarea id="set_proxies" rows="5" placeholder="http://user:pass@host:port">${c.ppproxies ? c.ppproxies.join('\n') : ''}</textarea>
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:15px; margin-top:-8px;">Proxies to randomly route IPTV traffic through. Exclude blocked datacenter proxies.</div>
+
+    <label>Allowed IPs (Whitelist, empty = disabled):</label>
+    <textarea id="set_ips" rows="3" placeholder="192.168.1.1&#10;10.0.0.0/8">${c.allowed_ips ? c.allowed_ips.join('\n') : ''}</textarea>
+    
+    <label>Allowed Hostnames (Domains, empty = disabled):</label>
+    <textarea id="set_domains" rows="3" placeholder="my.proxy.com">${c.allowed_domains ? c.allowed_domains.join('\n') : ''}</textarea>
+
+    <label>Gemini API Key (For AI EPG Mapper):</label>
+    <input type="password" id="set_gemini" value="${c.gemini_api_key || ''}" placeholder="AIzaSy..." />
+
+    <label>Webshare API Key (For Bandwidth Monitoring):</label>
+    <input type="password" id="set_webshare" value="${c.webshare_api_key || ''}" placeholder="Token..." />
+    
+    <div style="margin-top:20px;">
+      <button class="success" onclick="saveAppConfig()">${icons.check} Save Settings</button>
+    </div>
+  </div>`;
+}
+
+async function saveAppConfig() {
+  const parseLines = (id) => document.getElementById(id).value.split('\n').map(l => l.trim()).filter(l => l);
+  const data = {
+    ppproxies: parseLines('set_proxies'),
+    allowed_ips: parseLines('set_ips'),
+    allowed_domains: parseLines('set_domains'),
+    gemini_api_key: document.getElementById('set_gemini').value.trim(),
+    webshare_api_key: document.getElementById('set_webshare').value.trim(),
+    use_proxies_for_streams: S.config.use_proxies_for_streams
+  };
+  await post('/config', data);
+  load(true);
+}
+
 function render() {
   const a = document.getElementById('app');
   if (S.loading && !S.status) { a.innerHTML = '<div class="loading">Connecting to API...</div>'; return; }
   if (S.error) { a.innerHTML = '<div class="error" style="font-size:15px"><strong>Connection Error:</strong> ' + S.error + '</div>'; return; }
   
-  const tabs = ['dashboard', 'sources', 'xtream', 'playlist', 'epg', 'mapping', 'stats'];
-  const tabLabels = {dashboard:'Dashboard',sources:'Sources',xtream:'Xtream',playlist:'Playlist',epg:'AI EPG',mapping:'EPG Map',stats:'Stats'};
+  const tabs = ['dashboard', 'sources', 'xtream', 'playlist', 'epg', 'mapping', 'stats', 'settings'];
+  const tabLabels = {dashboard:'Dashboard',sources:'Sources',xtream:'Xtream',playlist:'Playlist',epg:'AI EPG',mapping:'EPG Map',stats:'Stats',settings:'Settings'};
   a.innerHTML = `
     <div class="tabs">
       ${tabs.map(t => `<button class="tab ${S.tab === t ? 'active' : ''}" onclick="switchTab('${t}')">${tabLabels[t]||t}</button>`).join('')}
@@ -753,6 +794,7 @@ function render() {
     <div class="tab-content ${S.tab === 'epg' ? 'active' : ''}">${Epg()}</div>
     <div class="tab-content ${S.tab === 'mapping' ? 'active' : ''}">${EpgMapping()}</div>
     <div class="tab-content ${S.tab === 'stats' ? 'active' : ''}">${ChannelStats()}</div>
+    <div class="tab-content ${S.tab === 'settings' ? 'active' : ''}">${SettingsTab()}</div>
   `;
 }
 

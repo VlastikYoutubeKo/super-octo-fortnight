@@ -103,29 +103,29 @@ func tvhGrid(path string, out interface{}) error {
 // ---- step 1: sanitize epg_mapping.json against the loaded EPG ----
 
 type maintStats struct {
-	MappingTotal    int `json:"mapping_total"`
-	MappingDeleted  int `json:"mapping_deleted"`
-	MappingRepoint  int `json:"mapping_repointed"`
-	ChannelsTotal   int `json:"tvh_channels"`
-	Relinked        int `json:"tvh_relinked"`
-	Cleared         int `json:"tvh_cleared"`
-	UniverseSize    int `json:"epg_universe"`
-	DurationSeconds int `json:"duration_seconds"`
+	MappingTotal    int      `json:"mapping_total"`
+	MappingDeleted  int      `json:"mapping_deleted"`
+	MappingRepoint  int      `json:"mapping_repointed"`
+	PinsApplied     int      `json:"pins_applied"`
+	PinsUnloaded    []string `json:"pins_unloaded,omitempty"`
+	ChannelsTotal   int      `json:"tvh_channels"`
+	Relinked        int      `json:"tvh_relinked"`
+	Cleared         int      `json:"tvh_cleared"`
+	Reimported      bool     `json:"tvh_reimported"`
+	UniverseSize    int      `json:"epg_universe"`
+	DurationSeconds int      `json:"duration_seconds"`
 }
 
-func sanitizeMappings(inUniverse map[string]bool, byCountry map[string][]string, st *maintStats) {
-	epgMappingLock.RLock()
-	snapshot := make(map[string]string, len(EPGMapping))
-	for k, v := range EPGMapping {
-		snapshot[k] = v
-	}
-	epgMappingLock.RUnlock()
-	st.MappingTotal = len(snapshot)
-
-	repoint := map[string]string{}
-	var del []string
+// planSanitize decides, for every mapping, whether to keep, re-point or delete it.
+// Pinned channels are human decisions and are always kept as-is (see epg_pins.go).
+// Pure so the rules can be tested without TVHeadend or the mapping file.
+func planSanitize(snapshot, pins map[string]string, inUniverse map[string]bool, byCountry map[string][]string) (repoint map[string]string, del []string) {
+	repoint = map[string]string{}
 	for ch, id := range snapshot {
 		if id == "" {
+			continue
+		}
+		if _, pinned := pins[ch]; pinned {
 			continue
 		}
 		if IsNonChannelName(ch) {
@@ -142,6 +142,19 @@ func sanitizeMappings(inUniverse map[string]bool, byCountry map[string][]string,
 			del = append(del, ch)
 		}
 	}
+	return repoint, del
+}
+
+func sanitizeMappings(inUniverse map[string]bool, byCountry map[string][]string, st *maintStats) {
+	epgMappingLock.RLock()
+	snapshot := make(map[string]string, len(EPGMapping))
+	for k, v := range EPGMapping {
+		snapshot[k] = v
+	}
+	epgMappingLock.RUnlock()
+	st.MappingTotal = len(snapshot)
+
+	repoint, del := planSanitize(snapshot, pinsSnapshot(), inUniverse, byCountry)
 
 	if len(repoint) == 0 && len(del) == 0 {
 		return
@@ -398,6 +411,18 @@ func relinkTVHChannels(st *maintStats) error {
 	return nil
 }
 
+// triggerEPGReimport re-runs TVHeadend's internal (cron) grabbers.
+//
+// Relinking a channel to a different EPG source does NOT move any events: TVHeadend
+// attaches broadcasts to channels at import time, so until a grabber re-reads the
+// XMLTV the channel keeps showing the old source's guide (or nothing). Its cron is
+// "4 */12 * * *", i.e. a relink made at 05:15 would otherwise stay invisible until
+// 12:04. Whenever we change a link, we force the re-import.
+func triggerEPGReimport() error {
+	_, err := tvhRequest("POST", "/api/epggrab/internal/rerun", "rerun=1")
+	return err
+}
+
 func writeBackup(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
@@ -440,14 +465,30 @@ func RunEPGMaintenance() (maintStats, error) {
 		return st, fmt.Errorf("EPG universe suspiciously small (%d); refusing to sanitize", st.UniverseSize)
 	}
 
+	// re-assert human overrides first, so the sanitizer sees the pinned ids in place
+	st.PinsApplied, st.PinsUnloaded = applyPins(inUniverse)
+	for _, ch := range st.PinsUnloaded {
+		log.Printf("EPG pin NOT applied (id not loaded in TVHeadend): %q", ch)
+	}
+
 	sanitizeMappings(inUniverse, byCountry, &st)
 
 	if err := relinkTVHChannels(&st); err != nil {
 		return st, fmt.Errorf("relink: %v", err)
 	}
+
+	// a changed link only reaches the guide after a grabber re-import
+	if st.Relinked+st.Cleared > 0 {
+		if err := triggerEPGReimport(); err != nil {
+			log.Printf("EPG maintenance: re-import trigger failed: %v", err)
+		} else {
+			st.Reimported = true
+		}
+	}
+
 	st.DurationSeconds = int(time.Since(start).Seconds())
-	log.Printf("EPG maintenance done: universe=%d mappings=%d repointed=%d deleted=%d channels=%d relinked=%d cleared=%d (%ds)",
-		st.UniverseSize, st.MappingTotal, st.MappingRepoint, st.MappingDeleted,
+	log.Printf("EPG maintenance done: universe=%d mappings=%d pinned=%d repointed=%d deleted=%d channels=%d relinked=%d cleared=%d (%ds)",
+		st.UniverseSize, st.MappingTotal, st.PinsApplied, st.MappingRepoint, st.MappingDeleted,
 		st.ChannelsTotal, st.Relinked, st.Cleared, st.DurationSeconds)
 	return st, nil
 }

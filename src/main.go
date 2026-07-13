@@ -118,6 +118,7 @@ func main() {
 	loadConfig()
 	detectXtream()
 	loadEpgMapping()
+	loadEPGPins()
 	InitStats()
 
 	// Download fallback video locally so ffmpeg starts instantly
@@ -134,6 +135,7 @@ func main() {
 	setupAPIRoutes(mux)
 	setupM3URoutes(mux)
 	setupMaintainRoutes(mux)
+	setupPinRoutes(mux)
 
 	// daily EPG janitor: sanitize mappings + force-correct TVHeadend channel links
 	go epgMaintenanceLoop()

@@ -3,6 +3,7 @@
 
 import logging
 import requests
+import gc
 import gzip
 import sys
 import os
@@ -116,6 +117,31 @@ def send_to_socket(data):
             logger.info("Data byla úspěšně odeslána do socketu.")
             return True
     except socket.error as e:
+        logger.error(f"Chyba socketu při odesílání: {e}")
+        return False
+
+
+def send_file_to_socket(path):
+    """Odešle soubor do TVHeadend socketu po částech (streamem).
+
+    Nenačítá celý XMLTV (~840 MB) do paměti. Načtení celého souboru najednou,
+    zatímco v paměti ještě žil celý ElementTree, bylo přesně to, co 2026-07-14
+    ve 04:06 odstřelil OOM killer (python měl 6,98 GB RSS).
+    """
+    try:
+        size = os.path.getsize(path)
+        logger.info(f"Odesílám data (velikost: {size / 1024 / 1024:.1f} MB) do TVHeadend socketu (stream)...")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(SOCKET_PATH)
+            with open(path, 'rb') as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    s.sendall(chunk)
+        logger.info("Data byla úspěšně odeslána do socketu.")
+        return True
+    except (socket.error, OSError) as e:
         logger.error(f"Chyba socketu při odesílání: {e}")
         return False
 
@@ -527,9 +553,14 @@ def main():
         logger.info(f"Finální EPG soubor byl úspěšně uložen do: {XMLTV_OUTPUT_FILE}")
 
         if is_root:
-            with open(XMLTV_OUTPUT_FILE, 'rb') as f:
-                final_xml_bytes = f.read()
-            send_to_socket(final_xml_bytes)
+            # Strom už není potřeba - uvolníme ho DŘÍV, než sáhneme na soubor.
+            # Držet strom (~6 GB) a k tomu načíst celý soubor (~840 MB) najednou
+            # znamenalo OOM kill (2026-07-14 04:06).
+            del final_tree
+            main_root.clear()
+            del main_root
+            gc.collect()
+            send_file_to_socket(XMLTV_OUTPUT_FILE)
 
     except Exception as e:
         logger.error(f"Došlo k závažné chybě v průběhu skriptu: {e}", exc_info=True)

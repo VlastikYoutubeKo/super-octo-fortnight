@@ -129,7 +129,7 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom
 <script>
 const API = window.location.protocol + '//' + window.location.host + '/api';
 let S = {
-  status: null, config: null, tab: 'dashboard', loading: true, error: null,
+  status: null, config: null, tab: 'dashboard', loading: true, error: null, needToken: false,
   provider: null, categories: null, category: null, streams: null, modal: null,
   perPage: 10, catPage: 0, showCats: false, epg: null, epgStream: null,
   epgMapping: null, epgFilter: '', channelStats: null
@@ -148,9 +148,24 @@ const icons = {
   back: '<svg class="svg-icon" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>'
 };
 
-async function get(u) { const r = await fetch(API + u); return await r.json(); }
-async function post(u, d) { const r = await fetch(API + u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }); return await r.json(); }
-async function del(u) { const r = await fetch(API + u, { method: 'DELETE' }); return await r.json(); }
+async function apiFetch(u, opts) {
+  opts = opts || {};
+  const headers = opts.headers || {};
+  const tok = localStorage.getItem('api_token');
+  if (tok) headers['X-API-Token'] = tok;
+  const r = await fetch(API + u, Object.assign({}, opts, { headers }));
+  if (r.status === 401) { const e = new Error('unauthorized'); e.status = 401; throw e; }
+  return r;
+}
+async function get(u) { const r = await apiFetch(u); return await r.json(); }
+async function post(u, d) { const r = await apiFetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }); return await r.json(); }
+async function del(u) { const r = await apiFetch(u, { method: 'DELETE' }); return await r.json(); }
+// Plain GET navigation (playlist downloads, stream previews) cannot send custom
+// headers, so the token is appended as a query parameter when one is stored.
+function tokQuery() {
+  const t = localStorage.getItem('api_token');
+  return t ? 'token=' + encodeURIComponent(t) : '';
+}
 
 function fmt(s) {
   if (s < 60) return s + 's';
@@ -326,7 +341,7 @@ function Xtream() {
         <h3 style="margin:0; color:var(--accent)">${S.category.name}</h3>
         <div style="display:flex; gap:10px;">
           ${!showCats ? `<button class="secondary" onclick="S.showCats=true;render()">${icons.back} Categories</button>` : ''}
-          <a href="${API}/xtream/providers/${S.provider}/category/${S.category.id}/playlist.m3u" target="_blank" download="playlist_${S.category.id}.m3u" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-hover); color:var(--text-main); border:none; padding:10px 16px; font-size:13px; font-weight:600; text-decoration:none; border-radius:6px; transition:all 0.2s" onmouseover="this.style.background='#475569'" onmouseout="this.style.background='var(--bg-hover)'">${icons.download} Download M3U</a>
+          <a href="${API}/xtream/providers/${S.provider}/category/${S.category.id}/playlist.m3u${tokQuery() ? '?' + tokQuery() : ''}" target="_blank" download="playlist_${S.category.id}.m3u" style="display:inline-flex; align-items:center; gap:6px; background:var(--bg-hover); color:var(--text-main); border:none; padding:10px 16px; font-size:13px; font-weight:600; text-decoration:none; border-radius:6px; transition:all 0.2s" onmouseover="this.style.background='#475569'" onmouseout="this.style.background='var(--bg-hover)'">${icons.download} Download M3U</a>
         </div>
       </div>
       
@@ -391,16 +406,24 @@ async function load(bg = false) {
   if (!bg) { S.loading = true; render(); }
   try {
     [S.status, S.config] = await Promise.all([get('/status'), get('/config')]);
-    S.loading = false; S.error = null;
+    S.loading = false; S.error = null; S.needToken = false;
     
     if (bg && S.tab === 'dashboard') {
       const el = document.getElementById('dashboard-data');
       if (el) { updateDashboardData(); return; }
     }
   } catch(e) {
-    S.error = 'Failed to connect to proxy API: ' + e.message; S.loading = false;
+    if (e.status === 401) { S.error = 'This proxy API is protected by a token.'; S.needToken = true; }
+    else { S.error = 'Failed to connect to proxy API: ' + e.message; }
+    S.loading = false;
   }
   render();
+}
+
+function saveToken() {
+  localStorage.setItem('api_token', document.getElementById('tok_input').value.trim());
+  S.needToken = false; S.error = null; S.loading = true;
+  load();
 }
 
 async function kill(k) { if(confirm('Terminate stream ' + k + '?')) { await del('/streams/' + encodeURIComponent(k)); load(); } }
@@ -552,6 +575,8 @@ function downloadBulkPlaylist() {
   
   const epgUrl = document.getElementById('pl-epg-url').value.trim();
   let url = API + '/playlist/bulk.m3u?provider=' + encodeURIComponent(pid) + '&categories=' + encodeURIComponent(checks.join(','));
+  const tq = tokQuery();
+  if (tq) url += '&' + tq;
   if (epgUrl) {
     url += '&epg_url=' + encodeURIComponent(epgUrl);
     alert('Generating playlist with Auto-EPG...\\nThis may take 10-30 seconds if AI needs to match new channels.\\nPlease wait for the download to start.');
@@ -755,7 +780,20 @@ function SettingsTab() {
 
     <label>Webshare API Key (For Bandwidth Monitoring):</label>
     <input type="password" id="set_webshare" value="${c.webshare_api_key || ''}" placeholder="Token..." />
-    
+
+    <hr style="border:none; border-top:1px solid var(--border); margin:20px 0;" />
+
+    <label>API Token (leave empty for no authentication):</label>
+    <input type="password" id="set_token" value="${c.api_token || ''}" placeholder="Optional token protecting all /api/* calls" autocomplete="off" />
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:15px; margin-top:-8px;">When set, every API request from another machine must send <code>X-API-Token</code>, <code>Authorization: Bearer &lt;token&gt;</code>, or <code>?token=</code>. The UI saves the token in your browser. Requests from localhost stay open (TVHeadend on the same server, EPG janitor). Remote TVHeadend playlists can append <code>?token=</code> to the playlist URL.</div>
+
+    <label>CORS Origin (empty = * = any origin):</label>
+    <input type="text" id="set_cors" value="${c.cors_origin || ''}" placeholder="https://my-ui.example.com" autocomplete="off" />
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:15px; margin-top:-8px;">Restrict which website may call the API from a browser. Set it to your UI origin to harden the setup; leave empty for backwards-compatible <code>*</code>.</div>
+
+    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" id="set_trust_proxy" ${c.trust_proxy_headers ? 'checked' : ''} style="width:auto;" /> Trust X-Forwarded-For / X-Real-IP headers</label>
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:15px; margin-top:-8px;">Enable only when the proxy is behind a reverse proxy (nginx etc.). When off (default), the IP allowlist uses the real socket peer, so remote attackers cannot spoof the header to bypass it.</div>
+
     <div style="margin-top:20px;">
       <button class="success" onclick="saveAppConfig()">${icons.check} Save Settings</button>
     </div>
@@ -770,15 +808,29 @@ async function saveAppConfig() {
     allowed_domains: parseLines('set_domains'),
     gemini_api_key: document.getElementById('set_gemini').value.trim(),
     webshare_api_key: document.getElementById('set_webshare').value.trim(),
-    use_proxies_for_streams: S.config.use_proxies_for_streams
+    use_proxies_for_streams: S.config.use_proxies_for_streams,
+    api_token: document.getElementById('set_token').value.trim(),
+    cors_origin: document.getElementById('set_cors').value.trim(),
+    trust_proxy_headers: document.getElementById('set_trust_proxy').checked
   };
   await post('/config', data);
+  if (data.api_token) localStorage.setItem('api_token', data.api_token);
+  else localStorage.removeItem('api_token');
   load(true);
 }
 
 function render() {
   const a = document.getElementById('app');
   if (S.loading && !S.status) { a.innerHTML = '<div class="loading">Connecting to API...</div>'; return; }
+  if (S.needToken) {
+    a.innerHTML = `<div class="card" style="max-width:520px; margin:80px auto;">
+      <h3 style="margin-bottom:15px">🔐 API token required</h3>
+      <p style="color:var(--text-muted); margin-bottom:15px;">${S.error || ''} Enter the <code>api_token</code> configured in config.json. The token is stored only in this browser (localStorage).</p>
+      <input type="password" id="tok_input" placeholder="API token" style="width:100%; margin-bottom:15px;" autocomplete="off" />
+      <button onclick="saveToken()">${icons.check} Unlock</button>
+    </div>`;
+    return;
+  }
   if (S.error) { a.innerHTML = '<div class="error" style="font-size:15px"><strong>Connection Error:</strong> ' + S.error + '</div>'; return; }
   
   const tabs = ['dashboard', 'sources', 'xtream', 'playlist', 'epg', 'mapping', 'stats', 'settings'];

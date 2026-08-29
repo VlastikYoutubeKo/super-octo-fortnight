@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Optional API authentication (`api_token` in config.json):** the management API (`:9005`) used to be wide open — anyone who could reach the port could read `GET /api/config` (upstream credentials, Gemini/Webshare keys) and flip settings. When a token is configured, every `/api/*` request from another machine must present it (`X-API-Token` header, `Authorization: Bearer <token>`, or `?token=<token>` for playlist URLs). Loopback requests stay trusted (local UI, EPG janitor, TVHeadend on the same box). The UI prompts for the token once and stores it in localStorage. Constant-time comparison; `/api/health` stays open for monitoring.
+- **`cors_origin` config:** restrict which website may call the API from a browser (empty = `*`, backwards compatible).
+- **`trust_proxy_headers` config (default `false`):** the IP allowlist previously trusted `X-Forwarded-For` from any client, so a remote attacker could spoof `X-Forwarded-For: 127.0.0.1` and bypass `allowed_ips` entirely. Now the socket peer is authoritative unless the proxy is explicitly behind a reverse proxy.
+- **`GET /api/health`:** `status: ok` + uptime + version, for uptime monitors.
+- **Startup config validation:** warns about sources whose URLs lack the `{channel_id}` placeholder and about an empty `sources` block.
+
+### Fixed
+- **Upstream credentials leaked via `/api/status`:** the `url` field of each stream carried `http://user:pass@host/...`; it is now redacted to `http://user:***@host/...`.
+- **Crash could corrupt JSON state files:** `config.json`, `epg_mapping.json`, `epg_pins.json`, `names_cache.json` and `channel_stats.json` were written in place (`os.Create`), so an OOM-kill or power loss mid-write destroyed them (the EPG mapping file was gutted once before and had to be restored from backup). All five now go through `atomicWriteFile` (same-dir temp + fsync + rename).
+- **Stale channel-ID cache never pruned:** `refreshChannelNamesLoop` only appended to `ChannelNames`/`CurrentIDs`, so streams dropped or renamed by the provider left dead IDs in the cache forever and every request probed them via "ID Discovery". Each successful refresh now rebuilds the source's cache entries from live data.
+- **Broken IPv6 client parsing:** the allowlist stripped the client port with a naive `LastIndex(":")`, which mangles bare IPv6 addresses; `net.SplitHostPort` is used instead.
+- **Deprecated `rand.Seed` dead code** (`shuffle()` in stream.go, `checkUrlHealth()` in proxy.go) removed.
+
+### Changed
+- The Settings tab of the Web UI gained fields for API token, CORS origin and trust-proxy headers; playlist download links append `?token=` when a token is stored.
 - **Pinned EPG mappings (`epg_pins.json`, `src/epg_pins.go`):** curated channel→ID overrides that the daily janitor must never undo. `sanitizeMappings` deletes or re-points any mapping whose ID carries words the channel name lacks (`ExtraIDWords`), which is right almost always but wrong for channels that share one broadcast slot under a combined ID. Pins are re-asserted at startup and at every maintenance run, and skipped by the sanitizer. A pin whose ID is not loaded in TVHeadend is reported and ignored, never written into the mapping (invariant 2 still holds). API: `GET /api/epg/pins`, `PUT /api/epg/pin`, `DELETE /api/epg/pin`.
 - **`tools/epg_gap_audit.py`:** finds channels mapped to a guide that only covers part of the day while another ID carries the same schedule for a fuller day. Uses evidence, not name heuristics: intra-day gaps (<20 h/day) plus ≥60% exact `(start, title)` agreement with the fuller ID. Found 57 candidates, incl. the near-empty Austrian ripper (~3-4 h/day of guide on ~24 `AT:` channels) and `Strike.TV.cz` (14.5 h/day → `STRIKE.TV.HD.cz`, 24 h/day, 99% identical).
 

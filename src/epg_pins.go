@@ -50,18 +50,16 @@ func loadEPGPins() {
 }
 
 func saveEPGPins() {
-	file, err := os.Create(epgPinsPath())
+	epgPinsLock.RLock()
+	data, err := json.MarshalIndent(EPGPins, "", "  ")
+	epgPinsLock.RUnlock()
 	if err != nil {
-		log.Printf("Failed to create epg pins file: %v", err)
+		log.Printf("Failed to marshal epg pins: %v", err)
 		return
 	}
-	defer file.Close()
-
-	epgPinsLock.RLock()
-	defer epgPinsLock.RUnlock()
-	enc := json.NewEncoder(file)
-	enc.SetIndent("", "  ")
-	enc.Encode(EPGPins)
+	if err := atomicWriteFile(epgPinsPath(), data); err != nil {
+		log.Printf("Failed to save epg pins: %v", err)
+	}
 }
 
 func pinsSnapshot() map[string]string {

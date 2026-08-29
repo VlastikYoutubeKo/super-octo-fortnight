@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -11,14 +12,28 @@ import (
 )
 
 func sendJSON(w http.ResponseWriter, data interface{}) {
+	configLock.RLock()
+	origin := Config.CORSOrigin
+	configLock.RUnlock()
+	if origin == "" {
+		origin = "*"
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
 	json.NewEncoder(w).Encode(data)
 }
 
 func setupAPIRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		sendJSON(w, map[string]interface{}{
+			"status":  "ok",
+			"version": "3.0 (Go Production)",
+			"uptime":  int(time.Since(startTime).Seconds()),
+		})
+	})
+
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		streamsLock.RLock()
 		defer streamsLock.RUnlock()
@@ -65,9 +80,11 @@ func setupAPIRoutes(mux *http.ServeMux) {
 				"key":         key,
 				"clients":     clients,
 				"age":         int(age),
-				"url":         urlStr,
+				// Never leak upstream credentials (http://user:pass@host/...) to
+				// whoever can reach the API port.
+				"url":         redactURL(urlStr),
 				"on_fallback": onFallback,
-			"next_retry":  nextRetry,
+				"next_retry":  nextRetry,
 				"kbps":        kbps,
 				"mbps":        mbps,
 			})		}
@@ -125,41 +142,81 @@ func setupAPIRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
-        configLock.RLock()
-		sendJSON(w, Config)
-        configLock.RUnlock()
+		configLock.RLock()
+		cfg := Config
+		configLock.RUnlock()
+		sendJSON(w, cfg)
 	})
 
 	mux.HandleFunc("POST /api/config", func(w http.ResponseWriter, r *http.Request) {
 		var data AppConfig
-		if err := json.NewDecoder(r.Body).Decode(&data); err == nil {
-            configLock.Lock()
-            if data.Sources != nil { Config.Sources = data.Sources }
-            Config.FallbackMode = data.FallbackMode
-            Config.AutoFallback = data.AutoFallback
-            Config.RedirectMode = data.RedirectMode
-            Config.InternalM3u8 = data.InternalM3u8
-            if data.Engine != "" { Config.Engine = data.Engine } else { Config.Engine = "http" }
-            if data.TVHeadend.URL != "" { Config.TVHeadend = data.TVHeadend }
-            if data.Proxies != nil { Config.Proxies = data.Proxies }
-            if data.Ppproxies != nil { Config.Ppproxies = data.Ppproxies }
-            if data.AllowedIPs != nil { Config.AllowedIPs = data.AllowedIPs }
-            if data.AllowedDomains != nil { Config.AllowedDomains = data.AllowedDomains }
-            Config.UseProxiesForStreams = data.UseProxiesForStreams
-            if data.GeminiAPIKey != "" { Config.GeminiAPIKey = data.GeminiAPIKey }
-            if data.WebshareAPIKey != "" { Config.WebshareAPIKey = data.WebshareAPIKey }
-            configLock.Unlock()
-            
-			detectXtream()
-			saveConfig()
+		body, err := io.ReadAll(r.Body)
+		if err == nil {
+			if err := json.Unmarshal(body, &data); err == nil {
+				// Detect which keys the client actually sent, so a partial config
+				// (e.g. from the Settings tab) can never wipe unrelated settings.
+				var raw map[string]json.RawMessage
+				json.Unmarshal(body, &raw)
+				hasKey := func(k string) bool { _, ok := raw[k]; return ok }
+
+				configLock.Lock()
+				if data.Sources != nil {
+					Config.Sources = data.Sources
+				}
+				Config.FallbackMode = data.FallbackMode
+				Config.AutoFallback = data.AutoFallback
+				Config.RedirectMode = data.RedirectMode
+				Config.InternalM3u8 = data.InternalM3u8
+				if data.Engine != "" {
+					Config.Engine = data.Engine
+				} else {
+					Config.Engine = "http"
+				}
+				if data.TVHeadend.URL != "" {
+					Config.TVHeadend = data.TVHeadend
+				}
+				if data.Proxies != nil {
+					Config.Proxies = data.Proxies
+				}
+				if data.Ppproxies != nil {
+					Config.Ppproxies = data.Ppproxies
+				}
+				if data.AllowedIPs != nil {
+					Config.AllowedIPs = data.AllowedIPs
+				}
+				if data.AllowedDomains != nil {
+					Config.AllowedDomains = data.AllowedDomains
+				}
+				Config.UseProxiesForStreams = data.UseProxiesForStreams
+				if data.GeminiAPIKey != "" {
+					Config.GeminiAPIKey = data.GeminiAPIKey
+				}
+				if data.WebshareAPIKey != "" {
+					Config.WebshareAPIKey = data.WebshareAPIKey
+				}
+				if hasKey("api_token") {
+					Config.APIToken = data.APIToken
+				}
+				if hasKey("cors_origin") {
+					Config.CORSOrigin = data.CORSOrigin
+				}
+				if hasKey("trust_proxy_headers") {
+					Config.TrustProxyHeaders = data.TrustProxyHeaders
+				}
+				configLock.Unlock()
+
+				detectXtream()
+				saveConfig()
+			}
 		}
 		sendJSON(w, map[string]bool{"success": true})
 	})
 
 	mux.HandleFunc("GET /api/sources", func(w http.ResponseWriter, r *http.Request) {
-        configLock.RLock()
-		sendJSON(w, map[string]interface{}{"sources": Config.Sources})
-        configLock.RUnlock()
+		configLock.RLock()
+		sources := Config.Sources
+		configLock.RUnlock()
+		sendJSON(w, map[string]interface{}{"sources": sources})
 	})
 
 	mux.HandleFunc("POST /api/sources", func(w http.ResponseWriter, r *http.Request) {
@@ -261,9 +318,10 @@ func setupAPIRoutes(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /api/xtream/providers", func(w http.ResponseWriter, r *http.Request) {
-        configLock.RLock()
-		sendJSON(w, map[string]interface{}{"providers": Config.XtreamProviders})
-        configLock.RUnlock()
+		configLock.RLock()
+		providers := Config.XtreamProviders
+		configLock.RUnlock()
+		sendJSON(w, map[string]interface{}{"providers": providers})
 	})
 
 	mux.HandleFunc("GET /api/xtream/providers/{id}/info", func(w http.ResponseWriter, r *http.Request) {

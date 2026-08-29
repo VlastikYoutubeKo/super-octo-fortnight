@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -71,7 +72,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 					}
 				}
 			}
-			fmt.Printf("Resolved countries %s to IDs: %v\n", countries, catIDs)
+			log.Printf("Resolved countries %s to IDs: %v\n", countries, catIDs)
 		} else if categoryNames != "" {
 			nameFilter := strings.Split(categoryNames, ",")
 			nameMap := make(map[string]bool)
@@ -85,7 +86,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 					catIDs = append(catIDs, fmt.Sprintf("%v", c["id"]))
 				}
 			}
-			fmt.Printf("Resolved category names to IDs: %v\n", catIDs)
+			log.Printf("Resolved category names to IDs: %v\n", catIDs)
 		} else {
 			catIDs = strings.Split(categories, ",")
 		}
@@ -143,7 +144,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 					epgChannels, err := FetchEPGChannelIDs(url)
 					if err != nil {
 						epgChannels = make(map[string]string)
-						fmt.Printf("Auto-EPG fetch from url failed: %v\n", err)
+						log.Printf("Auto-EPG fetch from url failed: %v\n", err)
 					}
 					
 					tvhChannels, tvhErr := FetchTVHeadendEPGChannels()
@@ -152,7 +153,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 							epgChannels[k] = v
 						}
 					} else {
-						fmt.Printf("FetchTVHeadendEPGChannels failed: %v\n", tvhErr)
+						log.Printf("FetchTVHeadendEPGChannels failed: %v\n", tvhErr)
 					}
 
 					if len(epgChannels) > 0 {
@@ -170,7 +171,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 						}
 
 						if matchErr != nil {
-							fmt.Printf("Auto-EPG AI match failed: %v\nFalling back to purely offline fuzzy matching...\n", matchErr)
+							log.Printf("Auto-EPG AI match failed: %v\nFalling back to purely offline fuzzy matching...\n", matchErr)
 							matched = make(map[string]string)
 							var allIDs []string
 							for id := range epgChannels {
@@ -194,7 +195,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 						epgMappingLock.Unlock()
 						saveEpgMapping()
 					} else {
-						fmt.Printf("Auto-EPG Fetch EPG failed: %v\n", err)
+						log.Printf("Auto-EPG Fetch EPG failed: %v\n", err)
 					}
 				}
 			}(unmapped, epgUrl)
@@ -273,7 +274,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 		epgChannels, err := FetchEPGChannelIDs(req.EpgUrl)
 		if err != nil {
 			epgChannels = make(map[string]string)
-			fmt.Printf("Manual match fetch from url failed: %v\n", err)
+			log.Printf("Manual match fetch from url failed: %v\n", err)
 		}
 		
 		tvhChannels, tvhErr := FetchTVHeadendEPGChannels()
@@ -302,7 +303,7 @@ func setupM3URoutes(mux *http.ServeMux) {
 		}
 
 		if matchErr != nil {
-			fmt.Printf("Manual AI Match failed: %v. Using purely offline fallback.\n", matchErr)
+			log.Printf("Manual AI Match failed: %v. Using purely offline fallback.\n", matchErr)
 			matched = make(map[string]string)
 			var allIDs []string
 			for id := range epgChannels {

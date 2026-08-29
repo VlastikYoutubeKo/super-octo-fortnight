@@ -31,6 +31,20 @@ go build -o ../proxy_server *.go
 - **Proxy Stream Video:** `http://localhost:9000`
 - **REST API & Web UI:** `http://localhost:9005`
 
+## 🔐 API Security
+
+The management API (`:9005`) used to be completely open — anyone who could reach the port could read your config (upstream credentials, API keys) and control the proxy. Three optional hardening knobs are now available in `config.json` (and in the **Settings** tab of the Web UI):
+
+- **`api_token`** — when set, every `/api/*` request from another machine must present it via `X-API-Token` header, `Authorization: Bearer <token>`, or `?token=<token>` query param (handy for TVHeadend playlist URLs). Requests from localhost stay open (the UI served on the same host, the EPG janitor, TVHeadend running on the same box). The UI asks for the token once and stores it in `localStorage`.
+- **`cors_origin`** — restrict which website may call the API from a browser. Leave empty for the backwards-compatible `*`.
+- **`trust_proxy_headers`** — `false` by default. When `false`, the IP allowlist (`allowed_ips`/`allowed_domains`) uses the real socket peer, so remote clients **cannot spoof** `X-Forwarded-For: 127.0.0.1` to bypass it. Set to `true` only when the proxy sits behind a reverse proxy (nginx etc.) that sets those headers.
+
+Additional hardening included:
+
+- `/api/status` now **redacts upstream credentials** (`http://user:pass@host/...` → `http://user:***@host/...`).
+- All JSON files (`config.json`, `epg_mapping.json`, `epg_pins.json`, `names_cache.json`, `channel_stats.json`) are now written **atomically** (temp file + rename), so a crash mid-write can never corrupt them.
+- New `GET /api/health` endpoint (`status: ok`, uptime, version) for monitoring.
+
 ## 🛡️ Stream Proxies & Webshare API
 
 To hide your server's IP address from upstream IPTV providers, you can enable **Stream Proxies**.

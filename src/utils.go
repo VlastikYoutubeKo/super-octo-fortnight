@@ -1,9 +1,31 @@
 package main
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 )
+
+// redactURL masks the password part of a URL that may embed upstream Xtream
+// credentials (http://user:pass@host:80/live/...), so API responses never leak
+// provider passwords to LAN viewers. Username is kept (it is not secret enough to
+// bother hiding and helps debugging), password is replaced with "***".
+func redactURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if u.User != nil {
+		name := u.User.Username()
+		if _, has := u.User.Password(); has {
+			u.User = url.UserPassword(name, "***")
+		}
+	}
+	return u.String()
+}
 
 func NormalizeChannelName(name string) string {
 	if name == "" {

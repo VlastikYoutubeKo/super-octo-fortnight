@@ -144,7 +144,7 @@ func saveStats() {
 		return
 	}
 
-	if err := os.WriteFile(statsFilePath(), data, 0644); err != nil {
+	if err := atomicWriteFile(statsFilePath(), data); err != nil {
 		log.Printf("Failed to save channel stats: %v", err)
 	}
 }

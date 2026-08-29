@@ -52,40 +52,57 @@ func refreshChannelNamesLoop() {
 
 			for _, p := range providers {
 				log.Printf("Refreshing channel names from provider: %s (Source: %s)", p.Name, sourceID)
-				names, err := fetchLiveStreams(p)
-				if err == nil && len(names) > 0 {
-					channelNamesLock.Lock()
-					currentIDsLock.Lock()
+			names, err := fetchLiveStreams(p)
+			if err == nil && len(names) > 0 {
+				channelNamesLock.Lock()
+				currentIDsLock.Lock()
+
+				// Rebuild this source's caches from live data instead of only
+				// appending: dropped or renamed streams otherwise leave stale
+				// entries in CurrentIDs/ChannelNames forever, so every request
+				// probes dead alternate IDs ("ID Discovery") and stats keep
+				// resolving to channels that no longer exist.
+				prefix := sourceID + ":"
+				for k := range ChannelNames {
+					if strings.HasPrefix(k, prefix) {
+						delete(ChannelNames, k)
+					}
+				}
+				for k := range CurrentIDs {
+					if strings.HasPrefix(k, prefix) {
+						delete(CurrentIDs, k)
+					}
+				}
+
+				for id, name := range names {
+					key := fmt.Sprintf("%s:%s", p.SourceID, id)
+					ChannelNames[key] = name
+					newValidIDsForSource[key] = true
 					
-					for id, name := range names {
-						key := fmt.Sprintf("%s:%s", p.SourceID, id)
-						ChannelNames[key] = name
-						newValidIDsForSource[key] = true
+					norm := NormalizeChannelName(name)
+					if norm != "" {
+						mappingKey := fmt.Sprintf("%s:%s", p.SourceID, norm)
 						
-						norm := NormalizeChannelName(name)
-						if norm != "" {
-							mappingKey := fmt.Sprintf("%s:%s", p.SourceID, norm)
-							
-							exists := false
-							for _, existing := range CurrentIDs[mappingKey] {
-								if existing == id {
-									exists = true
-									break
-								}
-							}
-							if !exists {
-								CurrentIDs[mappingKey] = append(CurrentIDs[mappingKey], id)
+						exists := false
+						for _, existing := range CurrentIDs[mappingKey] {
+							if existing == id {
+								exists = true
+								break
 							}
 						}
+						if !exists {
+							CurrentIDs[mappingKey] = append(CurrentIDs[mappingKey], id)
+						}
 					}
-					
-					currentIDsLock.Unlock()
-					channelNamesLock.Unlock()
-					log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
-					successForSource = true
-					anySuccess = true
-					break // Successfully fetched for this source, stop trying alternate providers
-				} else if err != nil {
+				}
+				
+				currentIDsLock.Unlock()
+				channelNamesLock.Unlock()
+				log.Printf("Successfully cached %d channel names from %s", len(names), p.Name)
+				successForSource = true
+				anySuccess = true
+				break // Successfully fetched for this source, stop trying alternate providers
+			} else if err != nil {
 					log.Printf("Failed to refresh names from %s: %v", p.Name, err)
 				}
 				time.Sleep(2 * time.Second)
@@ -131,14 +148,15 @@ func saveNamesCache() {
 	}
 	
 	cacheFile := filepath.Join(scriptDir, "names_cache.json")
-	file, err := os.Create(cacheFile)
+
+	encoded, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("Failed to create names cache file: %v", err)
+		log.Printf("Failed to marshal names cache: %v", err)
 		return
 	}
-	defer file.Close()
-	
-	json.NewEncoder(file).Encode(data)
+	if err := atomicWriteFile(cacheFile, encoded); err != nil {
+		log.Printf("Failed to save names cache: %v", err)
+	}
 }
 
 func loadNamesCache() {

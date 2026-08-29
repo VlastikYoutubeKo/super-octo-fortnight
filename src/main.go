@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -48,6 +49,9 @@ type AppConfig struct {
 	Ppproxies       []string            `json:"ppproxies"`
 	AllowedIPs      []string            `json:"allowed_ips"`
 	AllowedDomains  []string            `json:"allowed_domains"`
+	APIToken        string              `json:"api_token"`
+	CORSOrigin      string              `json:"cors_origin"`
+	TrustProxyHeaders bool              `json:"trust_proxy_headers"`
 	GeminiAPIKey    string              `json:"gemini_api_key"`
 	OllamaAPIUrl         string              `json:"ollama_api_url"`
 	OllamaAPIKey         string              `json:"ollama_api_key"`
@@ -142,7 +146,7 @@ func main() {
 
 	go func() {
 		log.Printf("API running on :%d", APIPort)
-		if err := http.ListenAndServe(fmt.Sprintf(":%d", APIPort), mux); err != nil {
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", APIPort), apiMiddleware(mux)); err != nil {
 			log.Fatalf("API failed: %v", err)
 		}
 	}()
@@ -192,9 +196,21 @@ func loadConfig() {
 	if err := json.Unmarshal(file, &Config); err != nil {
 		log.Printf("Failed to decode config.json: %v", err)
 	}
-
 	configLock.Unlock()
 	log.Printf("Loaded config successfully. AutoFallback: %v, Sources: %d", Config.AutoFallback, len(Config.Sources))
+
+	// Sanity warnings — a misconfigured source is much easier to spot at startup
+	// than hours later when every channel on it fails.
+	if len(Config.Sources) == 0 {
+		log.Println("Warning: config.json has no 'sources'. Add at least one source URL containing {channel_id}.")
+	}
+	for id, urls := range Config.Sources {
+		for _, u := range urls {
+			if !strings.Contains(u, "{channel_id}") {
+				log.Printf("Warning: source %q URL does not contain {channel_id}: %s", id, redactURL(u))
+			}
+		}
+	}
 }
 
 func downloadFallbackVideo() {
@@ -233,7 +249,7 @@ func saveConfig() {
 		log.Printf("Failed to marshal config: %v", err)
 		return
 	}
-	if err := os.WriteFile(configFilePath, data, 0644); err != nil {
+	if err := atomicWriteFile(configFilePath, data); err != nil {
 		log.Printf("Failed to save config: %v", err)
 	} else {
 		log.Printf("Config saved to config.json")
@@ -256,16 +272,17 @@ func loadEpgMapping() {
 
 func saveEpgMapping() {
 	mappingFile := filepath.Join(scriptDir, "epg_mapping.json")
-	file, err := os.Create(mappingFile)
-	if err != nil {
-		log.Printf("Failed to create epg mapping file: %v", err)
-		return
-	}
-	defer file.Close()
 
 	epgMappingLock.RLock()
-	defer epgMappingLock.RUnlock()
-	json.NewEncoder(file).Encode(EPGMapping)
+	data, err := json.MarshalIndent(EPGMapping, "", "  ")
+	epgMappingLock.RUnlock()
+	if err != nil {
+		log.Printf("Failed to marshal EPG mapping: %v", err)
+		return
+	}
+	if err := atomicWriteFile(mappingFile, data); err != nil {
+		log.Printf("Failed to save EPG mapping: %v", err)
+	}
 }
 
 func getProxies() []string {

@@ -31,13 +31,6 @@ type Stream struct {
 	CurrentBitrate      float64
 }
 
-func shuffle(urls []string) {
-	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(urls), func(i, j int) {
-		urls[i], urls[j] = urls[j], urls[i]
-	})
-}
-
 func startProducer(s *Stream) {
 	s.Mu.Lock()
 	if s.Active {

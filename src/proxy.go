@@ -12,23 +12,11 @@ import (
 )
 
 var (
-	allowedIPsCache  = map[string]bool{}
-	lastDNSCheck     time.Time
-	dnsMutex         sync.Mutex
-	httpClient       = &http.Client{Timeout: 10 * time.Second}
-	recentStreamCreations []time.Time
+	allowedIPsCache        = map[string]bool{}
+	lastDNSCheck           time.Time
+	dnsMutex               sync.Mutex
+	recentStreamCreations  []time.Time
 )
-
-func checkUrlHealth(targetUrl string) bool {
-	resp, err := httpClient.Head(targetUrl)
-	if err == nil {
-		resp.Body.Close()
-		if resp.StatusCode < 400 {
-			return true
-		}
-	}
-	return false
-}
 
 func getAllowedIPs() (map[string]bool, bool) {
 	configLock.RLock()
@@ -55,12 +43,35 @@ func getAllowedIPs() (map[string]bool, bool) {
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" { clientIP = r.Header.Get("X-Real-IP") }
-	if clientIP == "" { clientIP = r.RemoteAddr }
-	if strings.Contains(clientIP, ",") { clientIP = strings.Split(clientIP, ",")[0] }
+	// By default the socket peer is the source of truth: X-Forwarded-For is
+	// client-controlled, so trusting it unconditionally would let any attacker
+	// spoof "X-Forwarded-For: 127.0.0.1" and walk straight through the IP
+	// allowlist. Only honor proxy headers when the server is explicitly behind a
+	// reverse proxy (trust_proxy_headers: true in config.json).
+	configLock.RLock()
+	trustProxyHeaders := Config.TrustProxyHeaders
+	configLock.RUnlock()
+
+	var clientIP string
+	if trustProxyHeaders {
+		clientIP = r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.Header.Get("X-Real-IP")
+		}
+	}
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	// X-Forwarded-For may be a comma-separated chain: use the first (original) entry.
+	if i := strings.Index(clientIP, ","); i != -1 {
+		clientIP = strings.TrimSpace(clientIP[:i])
+	}
 	clientIP = strings.TrimSpace(clientIP)
-	if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 { clientIP = clientIP[:colonIdx] }
+	// Strip the port safely — net.SplitHostPort also handles bare IPv6 addresses
+	// correctly, which a naive LastIndex(":") would mangle.
+	if host, _, err := net.SplitHostPort(clientIP); err == nil {
+		clientIP = host
+	}
 	clientIP = strings.Trim(clientIP, "[]")
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
